@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+final/
+превью_позиции.xlsx
+*.tmp
+~$*
