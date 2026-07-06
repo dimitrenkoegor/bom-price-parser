@@ -1,22 +1,33 @@
 """
-Парсер цен на ЭКБ (oemsecrets.com)  — версия 3
-================================================
+Парсер цен на ЭКБ — версия 4 (API вместо браузерного парсинга)
+================================================================
 Поток работы:
-  1. Берёт Excel-запрос (например "149 торги.xlsx") — сам находит строку-шапку
-     и колонки (Наименование / Условное обозначение / Количество / Производитель),
+  1. Берёт Excel-запрос — сам находит строку-шапку и колонки
+     (Наименование / Условное обозначение / Количество / Производитель),
      вытаскивает артикул из описания.
   2. Пишет ПРЕВЬЮ  превью_позиции.xlsx  и показывает распознанное в консоли.
      Вы проверяете/правите его в Excel, сохраняете — и скрипт продолжит уже по
      вашим правкам.
-  3. Ищет цены на oemsecrets (обход Cloudflare через undetected-chromedriver),
-     выбирает брекет под количество, берёт авторизованных дистрибьюторов.
+  3. Ищет цены через официальные API дистрибьюторов:
+       - DigiKey Product Information API v4 (OAuth2 client_credentials)
+       - Newark/Farnell (element14) Product Search API
+       - Mouser Search API (включится автоматически, когда придёт одобрение
+         от Mouser — сейчас статус "pending authorisation")
+     Выбирает минимальную цену при ценовом брекете ≥ количества, среди
+     авторизованных дистрибьюторов.
   4. Пишет результат  final/BOM_Приложение_1.xlsx  — 10 колонок:
      Part Number | Distributor Part Number | Qty | Manufacturer | Distributor |
      Minimum Order | Stock | Lead Time | Unit Price USD | Unit Price RUB
      Рублёвая цена = USD * (курс ЦБ USD/RUB на момент запуска + наценка, по умолч. +4).
 
+Ключи API берутся из файла .env рядом со скриптом (не коммитится в git):
+    MOUSER_API_KEY=...
+    DIGIKEY_CLIENT_ID=...
+    DIGIKEY_CLIENT_SECRET=...
+    FARNELL_API_KEY=...
+
 Установка зависимостей:
-    pip install undetected-chromedriver selenium beautifulsoup4 openpyxl webdriver-manager
+    pip install openpyxl
 
 Запуск:
     python price_parser.py                      # авто-выбор Excel-запроса рядом
@@ -28,10 +39,12 @@
 """
 
 import argparse
-import time
-import random
+import json
 import re
 import sys
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -40,14 +53,20 @@ try:
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 except ImportError:
-    print("Установите зависимости:\n  pip install undetected-chromedriver selenium beautifulsoup4 openpyxl webdriver-manager")
+    print("Установите зависимости:\n  pip install openpyxl")
     sys.exit(1)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PREVIEW_NAME = "превью_позиции.xlsx"
+ENV_PATH = SCRIPT_DIR / ".env"
 
-AUTHORIZED = ["mouser", "digi-key", "digikey", "arrow", "tti", "tme",
-              "avnet", "newark", "farnell", "element14", "future"]
+AUTHORIZED_NAMES = {
+    "digikey": "DigiKey",
+    "mouser": "Mouser",
+    "newark": "Newark",
+    "farnell": "Farnell",
+    "element14": "Newark/Farnell",
+}
 
 # Русские «типовые» слова в начале наименования — отбрасываем при извлечении артикула
 RU_TYPE_WORDS = [
@@ -66,6 +85,27 @@ KNOWN_MFR = [
 
 
 # ─────────────────────────────────────────────
+# .ENV
+# ─────────────────────────────────────────────
+
+def load_env(path=ENV_PATH):
+    """Простой парсер .env (KEY=VALUE построчно, без внешних зависимостей)."""
+    env = {}
+    if not path.exists():
+        return env
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        env[key.strip()] = val.strip()
+    return env
+
+
+ENV = load_env()
+
+
+# ─────────────────────────────────────────────
 # КУРСЫ ВАЛЮТ
 # ─────────────────────────────────────────────
 
@@ -77,7 +117,6 @@ def get_eur_usd():
             headers={"User-Agent": "Mozilla/5.0"}
         )
         with urllib.request.urlopen(req, timeout=10) as r:
-            import json
             data = json.loads(r.read().decode())
         rate = float(data["rates"]["USD"])
         print(f"Курс EUR/USD (open.er-api): {rate:.4f}")
@@ -113,197 +152,17 @@ def get_usd_rub(markup=4.0, manual=None):
 
 
 # ─────────────────────────────────────────────
-# WEBDRIVER
+# ОБЩИЙ ФОРМАТ ПРЕДЛОЖЕНИЯ ДИСТРИБЬЮТОРА
 # ─────────────────────────────────────────────
-
-def create_driver(headless=False):
-    try:
-        import undetected_chromedriver as uc
-        opts = uc.ChromeOptions()
-        opts.add_argument("--window-size=1300,950")
-        if headless:
-            opts.add_argument("--headless=new")
-        driver = uc.Chrome(options=opts)
-        print("Драйвер: undetected-chromedriver")
-        return driver
-    except Exception as e:
-        print(f"undetected-chromedriver недоступен ({e.__class__.__name__}), пробую обычный Selenium…")
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    opts = Options()
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    opts.add_argument("--window-size=1300,950")
-    if headless:
-        opts.add_argument("--headless=new")
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        from selenium.webdriver.chrome.service import Service
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-    except Exception:
-        driver = webdriver.Chrome(options=opts)
-    driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-    print("Драйвер: Selenium")
-    return driver
-
-
-# ─────────────────────────────────────────────
-# OEMSECRETS
-# ─────────────────────────────────────────────
-
-EXTRACT_JS = r"""
-return (function(){
-  function toFloat(s){
-    // европейский формат: 1.234,56 → 1234.56
-    s = String(s).trim();
-    if(/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)){
-      s = s.replace(/\./g,'').replace(',','.');
-    } else {
-      s = s.replace(',','.');
-    }
-    return parseFloat(s);
-  }
-  function toInt(s){ s=String(s).replace(/[^\d]/g,''); return parseInt(s)||0; }
-  var rows=[].slice.call(document.querySelectorAll('[data-ps-row-index]'));
-  return rows.map(function(r){
-    var cells=(r.innerText||'').split(/\n|\t/).map(function(s){return s.trim();}).filter(Boolean);
-    var dist=r.getAttribute('data-delog-distributor-common-name')||cells[0]||'';
-    var stock=toInt(r.getAttribute('data-delog-quantity-in-stock')||'0');
-    var pn=cells[1]||'';
-    var moq=1, pkg='';
-    for(var i=0;i<cells.length;i++){
-      var m=cells[i].match(/^(\d[\d.]*|-)\s+(Bulk|Reel|Tape\s*&?\s*Reel|Tape|Box|Tube|Tray|Each|Cut\s*Tape|Bag|Pack|Ammo|Digi-?Reel|MiniReel)/i);
-      if(m){ if(m[1]!=='-') moq=toInt(m[1]); pkg=m[2]; break; }
-    }
-    var lead=null;
-    for(var i=0;i<cells.length;i++){ var lm=cells[i].match(/Lead\s*Time:\s*(\d+)\s*weeks?/i); if(lm){ lead=parseInt(lm[1]); break; } }
-    // Тиры цен: oemsecrets выводит чередующиеся ячейки: "qty" затем "€ price"
-    // Пример: ["1", "€ 0,3960", "10", "€ 0,2790"]
-    var tiers=[];
-    var pricePat=/^([€$£])\s*([\d.,]+)$/;
-    var intPat=/^[\d.,]+$/;
-    for(var i=1;i<cells.length;i++){
-      var pm=cells[i].match(pricePat);
-      if(pm){
-        var price=toFloat(pm[2]);
-        if(price<=0||price>9999999) continue;
-        // предыдущая ячейка должна быть целым числом (кол-во)
-        var prev=cells[i-1];
-        if(intPat.test(prev)){
-          var q=toInt(prev);
-          if(q>0){
-            tiers.push({qty:q, cur:pm[1], price:price});
-          }
-        }
-      }
-    }
-    var manu=''; var p=r;
-    for(var k=0;k<14 && p;k++){
-      if(p.getAttribute && p.hasAttribute && p.hasAttribute('data-ps-product-index')){
-        var mm=(p.innerText||'').match(/\bby\s+([A-Za-z][\w .,&\/\-]{1,40})/);
-        if(mm){ manu=mm[1].trim().replace(/\s+(Add to BoM|Get Quote|Datasheet).*$/,'').trim(); }
-        break;
-      }
-      p=p.parentElement;
-    }
-    return {dist:dist, stock:stock, pn:pn, moq:moq, pkg:pkg, lead:lead, tiers:tiers, manu:manu};
-  });
-})();
-"""
-
-
-def wait_for_results(driver, timeout=55):
-    """
-    Ждёт появления строк с ценами ([data-ps-row-index]).
-    Увеличенный таймаут — oemsecrets грузит данные через XHR, не сразу.
-    """
-    deadline = time.time() + timeout
-    last = ""
-    while time.time() < deadline:
-        # Редирект на request-stock = PN не найден
-        try:
-            url = driver.current_url or ""
-            if "request-stock" in url:
-                return "empty"
-        except Exception:
-            pass
-        try:
-            n = driver.execute_script("return document.querySelectorAll('[data-ps-row-index]').length;")
-        except Exception:
-            n = 0
-        body = ""
-        try:
-            body = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
-        except Exception:
-            pass
-        if n and n > 0:
-            time.sleep(2)          # ждём дозагрузку всех строк
-            return "ok"
-        if "No Distributor Results Found" in body or "request-stock" in body:
-            return "empty"
-        if "Just a moment" in body or "Один момент" in body or "Verifying you are human" in body:
-            last = "cloudflare"
-        time.sleep(2.5)            # пауза между проверками
-    return last or "timeout"
-
-
-def set_quantity(driver, qty):
-    try:
-        ok = driver.execute_script("""
-            var inp=document.querySelector('input[name="requested_quantity"]');
-            if(!inp) return false;
-            inp.value=arguments[0];
-            inp.dispatchEvent(new Event('input',{bubbles:true}));
-            inp.dispatchEvent(new Event('change',{bubbles:true}));
-            var btn=null, scope=inp.closest('form')||inp.parentElement;
-            for(var hop=0; hop<4 && scope; hop++){
-              var b=[].slice.call(scope.querySelectorAll('button,a')).find(function(x){return /apply/i.test(x.textContent);});
-              if(b){ btn=b; break; } scope=scope.parentElement;
-            }
-            if(btn){ btn.click(); return true; }
-            if(inp.form){ inp.form.submit(); return true; }
-            return false;
-        """, str(qty))
-        if ok:
-            time.sleep(3)
-            wait_for_results(driver, timeout=25)
-        return bool(ok)
-    except Exception:
-        return False
-
-
-def parse_oemsecrets(driver, pn, qty):
-    driver.get(f"https://www.oemsecrets.com/compare/{pn}")
-    time.sleep(random.uniform(10, 13))  # случайная пауза: ждём XHR после навигации
-    status = wait_for_results(driver, timeout=55)
-    if status == "cloudflare":
-        print("    Cloudflare блокирует. Поставьте undetected-chromedriver и не используйте --headless.")
-        return []
-    if status == "empty":
-        print("    Нет результатов на oemsecrets.")
-        return []
-    if status != "ok":
-        print(f"    Таймаут ожидания ({status}).")
-        return []
-    set_quantity(driver, qty)
-    try:
-        raw = driver.execute_script(EXTRACT_JS) or []
-    except Exception as e:
-        print(f"    Ошибка извлечения: {e}")
-        return []
-    offers = []
-    for o in raw:
-        dist = (o.get("dist") or "").strip()
-        if not dist or not any(a in dist.lower() for a in AUTHORIZED):
-            continue
-        if not (o.get("tiers") or []):
-            continue
-        offers.append(o)
-    return offers
+# offer = {
+#   "dist": "DigiKey", "pn": "<distributor SKU>", "stock": int, "moq": int,
+#   "lead": int|None, "tiers": [{"qty": int, "price": float}], "manu": str,
+# }
 
 
 def pick_tier(tiers, qty):
+    """Возвращает (tier, min_not_met) — тир с наибольшим qty ≤ запрошенного,
+    либо самый маленький тир, если такого нет (и флаг min_not_met=True)."""
     ts = sorted(tiers, key=lambda t: t["qty"])
     applicable = [t for t in ts if t["qty"] <= qty]
     if applicable:
@@ -311,226 +170,212 @@ def pick_tier(tiers, qty):
     return ts[0], True
 
 
-def to_usd(price, cur, rate_eur):
-    if cur == "$":
-        return price
-    if cur == "£":
-        return price * 1.27
-    return price * rate_eur
+# ─────────────────────────────────────────────
+# DIGIKEY  (Product Information API v4, OAuth2 client_credentials)
+# ─────────────────────────────────────────────
+
+_digikey_token_cache = {"token": None, "expires_at": 0}
 
 
-def _parse_octopart_json(data, pn):
-    """
-    Извлекает предложения дистрибьюторов из Next.js JSON Octopart.
-    data = parsed __NEXT_DATA__ dict
-    """
-    import json
+def _digikey_get_token():
+    now = time.time()
+    if _digikey_token_cache["token"] and _digikey_token_cache["expires_at"] > now + 30:
+        return _digikey_token_cache["token"]
 
-    def deep_find(obj, key):
-        """Рекурсивно ищет все значения ключа в произвольной структуре."""
-        results = []
-        if isinstance(obj, dict):
-            if key in obj:
-                results.append(obj[key])
-            for v in obj.values():
-                results.extend(deep_find(v, key))
-        elif isinstance(obj, list):
-            for item in obj:
-                results.extend(deep_find(item, key))
-        return results
+    client_id = ENV.get("DIGIKEY_CLIENT_ID")
+    client_secret = ENV.get("DIGIKEY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
 
-    # Octopart Next.js: offers находятся в dehydratedState → queries → data → results → parts → sellers
+    data = urllib.parse.urlencode({
+        "client_id": client_id, "client_secret": client_secret,
+        "grant_type": "client_credentials",
+    }).encode()
+    req = urllib.request.Request("https://api.digikey.com/v1/oauth2/token", data=data, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode())
+        _digikey_token_cache["token"] = d["access_token"]
+        _digikey_token_cache["expires_at"] = now + int(d.get("expires_in", 600))
+        return d["access_token"]
+    except Exception as e:
+        print(f"    DigiKey OAuth error: {e}")
+        return None
+
+
+def search_digikey(pn, qty):
+    client_id = ENV.get("DIGIKEY_CLIENT_ID")
+    if not client_id:
+        return []
+    token = _digikey_get_token()
+    if not token:
+        return []
+
+    url = "https://api.digikey.com/products/v4/search/keyword"
+    body = json.dumps({"Keywords": pn, "Limit": 10}).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Authorization", "Bearer " + token)
+    req.add_header("X-DIGIKEY-Client-Id", client_id)
+    req.add_header("X-DIGIKEY-Locale-Site", "US")
+    req.add_header("X-DIGIKEY-Locale-Language", "en")
+    req.add_header("X-DIGIKEY-Locale-Currency", "USD")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        print(f"    DigiKey HTTP {e.code}: {e.read().decode()[:200]}")
+        return []
+    except Exception as e:
+        print(f"    DigiKey error: {e}")
+        return []
+
     offers = []
-    sellers_lists = deep_find(data, "sellers")
-    for sellers in sellers_lists:
-        if not isinstance(sellers, list):
+    for p in d.get("Products", []) or []:
+        # Берём только точное совпадение по PN производителя (без опечаток/аналогов)
+        mpn = (p.get("ManufacturerProductNumber") or "").strip()
+        if mpn.upper() != pn.strip().upper():
             continue
-        for seller in sellers:
-            company = seller.get("company") or {}
-            dist = company.get("name") or seller.get("name") or ""
-            if not any(a in dist.lower() for a in AUTHORIZED):
+        tiers = []
+        for sp in p.get("StandardPricing", []) or []:
+            price = sp.get("UnitPrice")
+            brk_qty = sp.get("BreakQuantity")
+            if price is not None and brk_qty is not None:
+                tiers.append({"qty": int(brk_qty), "price": float(price)})
+        if not tiers:
+            up = p.get("UnitPrice")
+            if up is not None:
+                tiers.append({"qty": 1, "price": float(up)})
+        if not tiers:
+            continue
+        stock = int(p.get("QuantityAvailable") or 0)
+        moq = int(p.get("MinimumOrderQuantity") or 1)
+        manu = ((p.get("Manufacturer") or {}).get("Name")) or ""
+        offers.append({
+            "dist": "DigiKey", "pn": p.get("ProductVariations", [{}])[0].get("DigiKeyProductNumber", "")
+                    if p.get("ProductVariations") else (p.get("DigiKeyPartNumber") or ""),
+            "stock": stock, "moq": moq, "lead": None, "tiers": tiers, "manu": manu,
+        })
+    return offers
+
+
+# ─────────────────────────────────────────────
+# MOUSER  (Search API)
+# ─────────────────────────────────────────────
+
+def search_mouser(pn, qty):
+    key = ENV.get("MOUSER_API_KEY")
+    if not key:
+        return []
+    url = "https://api.mouser.com/api/v1.0/search/partnumber?apiKey=" + urllib.parse.quote(key)
+    body = json.dumps({"SearchByPartRequest": {"mouserPartNumber": pn, "partSearchOptions": ""}}).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode())
+    except Exception as e:
+        print(f"    Mouser error: {e}")
+        return []
+
+    errors = d.get("Errors") or []
+    if errors:
+        # Тихо пропускаем — например "pending authorisation" пока не одобрен ключ
+        return []
+
+    results = (d.get("SearchResults") or {}).get("Parts") or []
+    offers = []
+    for p in results:
+        mpn = (p.get("ManufacturerPartNumber") or "").strip()
+        if mpn.upper() != pn.strip().upper():
+            continue
+        tiers = []
+        for pb in p.get("PriceBreaks", []) or []:
+            price_str = (pb.get("Price") or "").replace("$", "").replace(",", "").strip()
+            try:
+                price = float(price_str)
+            except ValueError:
                 continue
-            offers_raw = seller.get("offers") or []
-            for off in offers_raw:
-                prices_raw = off.get("prices") or {}
-                # prices_raw может быть dict {currency: [[qty, price], ...]} или list
-                tiers = []
-                if isinstance(prices_raw, dict):
-                    usd_tiers = prices_raw.get("USD") or prices_raw.get("usd") or next(iter(prices_raw.values()), [])
-                    for item in usd_tiers:
-                        if isinstance(item, (list, tuple)) and len(item) >= 2:
-                            tiers.append({"qty": int(item[0]), "cur": "$", "price": float(item[1])})
-                elif isinstance(prices_raw, list):
-                    for item in prices_raw:
-                        if isinstance(item, dict):
-                            qty = item.get("quantity") or item.get("qty") or 1
-                            price = item.get("price") or item.get("convertedPrice") or 0
-                            cur = item.get("currency") or "$"
-                            if price:
-                                tiers.append({"qty": int(qty), "cur": cur, "price": float(price)})
-                if not tiers:
-                    continue
-                stock = int(off.get("in_stock_quantity") or off.get("quantity") or 0)
-                moq = int(off.get("moq") or off.get("min_order_qty") or 1)
-                distr_pn = off.get("sku") or off.get("part_number") or pn
-                offers.append({
-                    "dist": dist, "pn": distr_pn, "stock": stock,
-                    "moq": moq, "lead": None, "tiers": tiers, "manu": "",
-                })
-    return offers
-
-
-def _parse_octopart_text(text, pn):
-    """
-    Резервный текстовый парсер для Octopart.innerText.
-    Ищет блоки: ДистрибьюторИмя → PN дистрибьютора → остаток → MOQ → цены.
-    """
-    DIST_CANONICAL = {
-        "mouser": "Mouser", "digi-key": "DigiKey", "digikey": "DigiKey",
-        "arrow": "Arrow Electronics", " tti ": "TTI", "tme": "TME",
-        "avnet": "Avnet", "newark": "Newark", "farnell": "Farnell",
-        "element14": "Newark", "future electronics": "Future Electronics",
-    }
-    QTY_BREAKS = [1, 10, 25, 100, 250, 1000, 2500, 10000]
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    offers = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        matched_dist = next(
-            (DIST_CANONICAL[k] for k in DIST_CANONICAL if k.strip() in line.lower()),
-            None
-        )
-        if not matched_dist:
-            i += 1
+            tiers.append({"qty": int(pb.get("Quantity", 1)), "price": price})
+        if not tiers:
             continue
-        distr_pn, stock, moq, prices = "", 0, 1, []
-        j = i + 1
-        while j < min(i + 25, len(lines)):
-            l = lines[j]
-            # Партномер дистрибьютора: латиница+цифры, без пробелов
-            if not distr_pn and re.fullmatch(r"[A-Za-z0-9\-_.]+", l) and 3 <= len(l) <= 45:
-                distr_pn = l
-            # Остаток: целое число
-            elif re.fullmatch(r"\d{1,8}", l) and not stock:
-                stock = int(l)
-            # MOQ строка: "1 Bulk USD"
-            elif re.match(r"^\d+\s+(Bulk|Reel|Tape|Box|Tube|Tray|Each|Cut)", l, re.I):
-                m = re.match(r"^(\d+)", l)
-                if m:
-                    moq = int(m.group(1))
-            # Цена: "12.345" или "1,234.56"
-            elif re.fullmatch(r"\d{1,6}(?:[,]\d{3})*[.]\d{2,4}", l):
-                val = float(l.replace(",", ""))
-                if 0.001 < val < 999999:
-                    prices.append(val)
-            # Конец блока
-            elif any(k.strip() in l.lower() for k in DIST_CANONICAL) and l != line:
-                break
-            j += 1
-        if prices:
-            tiers = [{"qty": QTY_BREAKS[k] if k < len(QTY_BREAKS) else QTY_BREAKS[-1],
-                      "cur": "$", "price": p} for k, p in enumerate(prices)]
-            offers.append({
-                "dist": matched_dist, "pn": distr_pn or pn,
-                "stock": stock, "moq": moq, "lead": None, "tiers": tiers, "manu": "",
-            })
-        i = j
+        stock_str = re.sub(r"[^\d]", "", p.get("Availability") or "")
+        stock = int(stock_str) if stock_str else 0
+        moq = int(p.get("Min") or 1)
+        offers.append({
+            "dist": "Mouser", "pn": p.get("MouserPartNumber") or "",
+            "stock": stock, "moq": moq, "lead": None, "tiers": tiers,
+            "manu": p.get("Manufacturer") or "",
+        })
     return offers
 
 
-def parse_octopart(driver, pn, qty):
-    """
-    Fallback: парсит Octopart через Selenium.
-    Сначала пробует __NEXT_DATA__ JSON (надёжно), потом innerText (резервный).
-    """
+# ─────────────────────────────────────────────
+# NEWARK / FARNELL (element14 Product Search API)
+# ─────────────────────────────────────────────
+
+def search_farnell(pn, qty):
+    key = ENV.get("FARNELL_API_KEY")
+    if not key:
+        return []
+    params = (
+        "term=manuPartNum%3A" + urllib.parse.quote(pn) +
+        "&storeInfo.id=www.newark.com"
+        "&resultsSettings.offset=0"
+        "&resultsSettings.numberOfResults=5"
+        "&resultsSettings.responseGroup=large"
+        "&callInfo.responseDataFormat=JSON"
+        "&callinfo.apiKey=" + key
+    )
+    url = "https://api.element14.com/catalog/products?" + params
+    req = urllib.request.Request(url)
     try:
-        driver.get(f"https://octopart.com/search?q={pn}&currency=USD")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode())
     except Exception as e:
-        print(f"    Octopart navigate error: {e}")
+        print(f"    Newark/Farnell error: {e}")
         return []
 
-    # Случайная задержка 7–11 сек + прокрутка — имитация человека, обход антибота
-    time.sleep(random.uniform(10, 13))
-    try:
-        driver.execute_script("window.scrollTo(0, 400);")
-        time.sleep(random.uniform(1.5, 3.0))
-        driver.execute_script("window.scrollTo(0, 800);")
-        time.sleep(random.uniform(1.0, 2.0))
-    except Exception:
-        pass
-
-    # Попытка 1: Next.js JSON (структурированные данные)
-    try:
-        import json
-        raw_json = driver.execute_script(
-            "var el=document.getElementById('__NEXT_DATA__'); return el ? el.textContent : null;"
-        )
-        if raw_json:
-            data = json.loads(raw_json)
-            offers = _parse_octopart_json(data, pn)
-            if offers:
-                print(f"    Octopart JSON: {len(offers)} предложений")
-                return offers
-    except Exception as e:
-        print(f"    Octopart JSON parse error: {e}")
-
-    # Попытка 2: текстовый парсер
-    try:
-        text = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
-    except Exception:
-        return []
-    offers = _parse_octopart_text(text, pn)
-    if offers:
-        print(f"    Octopart текст: {len(offers)} предложений")
-    else:
-        print(f"    Octopart: ничего не найдено для {pn}")
-    return offers
-
-
-def normalize_pn_variants(pn):
-    """
-    Возвращает список вариантов PN для поиска на oemsecrets (в порядке приоритета).
-    - /NOPB, /N0PB → убираем слэш (oemsecrets редиректит при слэше)
-    - суффикс x/X (wildcard упаковки) → пробуем R (reel) и T (tape&reel)
-    """
-    variants = [pn]
-    # /NOPB или /N0PB → убрать слэш
-    nopb = re.sub(r'/N[O0]PB$', 'NOPB', pn, flags=re.I)
-    if nopb != pn:
-        variants.append(nopb)
-        # ещё без NOPB совсем (иногда на oemsecrets только базовый PN)
-        base_no_nopb = re.sub(r'N[O0]PB$', '', nopb).rstrip('-_')
-        if base_no_nopb not in variants:
-            variants.append(base_no_nopb)
-    # wildcard x → пробуем R и T
-    if pn.endswith('x') or pn.endswith('X'):
-        base = pn[:-1]
-        for suf in ('R', 'T', 'TR'):
-            v = base + suf
-            if v not in variants:
-                variants.append(v)
-    return variants
-
-
-def find_best_price(driver, pn, qty, rate_eur):
-    print(f"    qty={qty}")
-
-    # Шаг 1: oemsecrets — пробуем все варианты нормализованного PN
+    products = (d.get("manufacturerPartNumberSearchReturn") or {}).get("products") or []
     offers = []
-    searched_pn = pn
-    for variant in normalize_pn_variants(pn):
-        if variant != pn:
-            print(f"    Пробую вариант PN: {variant}")
-        offers = parse_oemsecrets(driver, variant, qty)
-        if offers:
-            searched_pn = variant
-            break
+    for p in products:
+        mpn = (p.get("translatedManufacturerPartNumber") or "").strip()
+        if mpn.upper() != pn.strip().upper():
+            continue
+        tiers = []
+        for pb in p.get("prices", []) or []:
+            cost = pb.get("cost")
+            frm = pb.get("from")
+            if cost is not None and frm is not None:
+                tiers.append({"qty": int(frm), "price": float(cost)})
+        if not tiers:
+            continue
+        stock_info = p.get("stock") or {}
+        stock = int(stock_info.get("level") or 0)
+        lead = stock_info.get("leastLeadTime")
+        moq = int(p.get("translatedMinimumOrderQuality") or 1)
+        offers.append({
+            "dist": "Newark/Farnell", "pn": p.get("sku") or "",
+            "stock": stock, "moq": moq,
+            "lead": int(lead) if lead else None,
+            "tiers": tiers, "manu": p.get("brandName") or "",
+        })
+    return offers
 
-    # Шаг 2 (fallback): Octopart
-    if not offers:
-        print(f"    oemsecrets пуст/заблокирован → пробуем Octopart...")
-        offers = parse_octopart(driver, pn, qty)
+
+# ─────────────────────────────────────────────
+# ВЫБОР ЛУЧШЕЙ ЦЕНЫ
+# ─────────────────────────────────────────────
+
+def find_best_price(pn, qty):
+    print(f"    qty={qty}")
+    offers = []
+    for search_fn in (search_digikey, search_mouser, search_farnell):
+        try:
+            offers.extend(search_fn(pn, qty))
+        except Exception as e:
+            print(f"    {search_fn.__name__} ошибка: {e}")
 
     if not offers:
         return {"pn": pn, "qty": qty, "status": "RFQ"}
@@ -538,23 +383,18 @@ def find_best_price(driver, pn, qty, rate_eur):
     best = None
     for o in offers:
         tier, min_not_met = pick_tier(o["tiers"], qty)
-        price_usd = to_usd(tier["price"], tier.get("cur", "€"), rate_eur)
+        price_usd = tier["price"]
         stock = o.get("stock", 0)
         lead = o.get("lead")
         in_stock = stock > 0 and lead is None
         cand = {
-            "pn": pn,
-            # Distributor PN: ставим если отличается от запрошенного (суффикс упаковки)
-            "distr_pn": o.get("pn", "") if searched_pn != pn else o.get("pn", ""),
+            "pn": pn, "distr_pn": o.get("pn", ""),
             "manufacturer": o.get("manu", ""),
             "distributor": o.get("dist", ""), "moq": o.get("moq", 1),
             "stock": stock, "lead": lead,
-            "price_usd": price_usd, "currency": tier.get("cur", "€"),
+            "price_usd": price_usd,
             "qty": qty, "in_stock": in_stock, "min_not_met": min_not_met, "status": "FOUND",
         }
-        # Если PN с суффиксом отличается — записываем найденный вариант в distr_pn
-        if searched_pn != pn and not cand["distr_pn"]:
-            cand["distr_pn"] = searched_pn
         key = (0 if in_stock else 1, price_usd)
         if best is None or key < best[0]:
             best = (key, cand)
@@ -793,7 +633,7 @@ def packaging_only_suffix(req_pn, dist_pn):
     return b.startswith(a) or a.startswith(b)
 
 
-def write_results(results, output_path, rate_eur, rate_rub):
+def write_results(results, output_path, rate_rub):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "BOM"
@@ -871,10 +711,11 @@ def write_results(results, output_path, rate_eur, rate_rub):
     found = sum(1 for r in results if r.get("status") == "FOUND")
     rfq = len(results) - found
     note_row = len(results) + 3
-    note = (f"Найдено: {found} | RFQ: {rfq} | Курс EUR/USD: {rate_eur:.4f} | "
+    note = (f"Найдено: {found} | RFQ: {rfq} | "
             f"Курс USD/RUB (ЦБ + наценка): {rate_rub:.4f} | "
-            f"Цена по ценовому брекету. "
-            f"Авторизованные: DigiKey, Mouser, Arrow, TTI, TME, Avnet, Newark/Farnell, Future.")
+            f"Цена по ценовому брекету. Источник: официальные API дистрибьюторов "
+            f"(DigiKey Product Information API v4, Newark/Farnell Product Search API, "
+            f"Mouser Search API). Авторизованные: DigiKey, Mouser, Newark/Farnell.")
     nc = ws.cell(row=note_row, column=1, value=note)
     nc.font = Font(name="Arial", size=9, color="595959")
     nc.alignment = Alignment(horizontal="left", wrap_text=True)
@@ -918,12 +759,10 @@ def load_items(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Парсер цен ЭКБ (oemsecrets + Octopart)")
+    ap = argparse.ArgumentParser(description="Парсер цен ЭКБ (DigiKey + Mouser + Newark/Farnell API)")
     ap.add_argument("--input", "-i", default=None, help="Excel/txt запрос. По умолч. авто-выбор")
     ap.add_argument("--output", "-o", default=None)
     ap.add_argument("--once", nargs=2, metavar=("PN", "QTY"), help="Одна позиция для проверки")
-    ap.add_argument("--rate", type=float, default=None,
-                    help="Курс EUR->USD (по умолч. авто с open.er-api.com)")
     ap.add_argument("--rub-rate", type=float, default=None,
                     help="Курс USD/RUB вручную (иначе берётся с ЦБ)")
     ap.add_argument("--rub-markup", type=float, default=4.0,
@@ -933,7 +772,6 @@ def main():
     ap.add_argument("--from-preview", action="store_true",
                     help="Сразу читать превью_позиции.xlsx")
     ap.add_argument("--yes", "-y", action="store_true", help="Не спрашивать подтверждение")
-    ap.add_argument("--headless", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
 
@@ -971,53 +809,56 @@ def main():
             if preview_path.exists():
                 items = read_preview(preview_path)
 
-    # 3) курсы
-    rate_eur = args.rate if args.rate else get_eur_usd()
+    # 3) курс
     rate_rub = get_usd_rub(markup=args.rub_markup, manual=args.rub_rate)
 
-    # 4) поиск цен
-    print(f"\nКурс EUR/USD: {rate_eur:.4f}  |  USD/RUB: {rate_rub:.4f}")
+    # 4) наличие API-ключей
+    have_keys = [name for name, val in (
+        ("DigiKey", ENV.get("DIGIKEY_CLIENT_ID")),
+        ("Mouser", ENV.get("MOUSER_API_KEY")),
+        ("Newark/Farnell", ENV.get("FARNELL_API_KEY")),
+    ) if val]
+    if not have_keys:
+        print("\nВНИМАНИЕ: в .env не найдено ни одного API-ключа. "
+              "Все позиции уйдут в RFQ. Проверьте файл .env рядом со скриптом.")
+    else:
+        print(f"\nАктивные источники: {', '.join(have_keys)}")
+
+    # 5) поиск цен
+    print(f"USD/RUB: {rate_rub:.4f}")
     print(f"Позиций к поиску: {len(items)}")
     out_path = Path(args.output) if args.output else (SCRIPT_DIR / "final" / "BOM_Приложение_1.xlsx")
-    driver = create_driver(headless=args.headless)
     results = []
-    try:
-        for i, it in enumerate(items, 1):
-            pn = it.get("pn")
-            qty = it.get("qty", 1)
-            num = it.get("num", i)
-            print(f"\n[{i}/{len(items)}] #{num}: {pn or '(нет артикула)'}")
-            if not pn:
-                results.append({
-                    "pn": "", "qty": qty,
-                    "manufacturer": it.get("manufacturer", ""),
-                    "description": it.get("description", ""),
-                    "status": "RFQ",
-                })
-                continue
-            try:
-                r = find_best_price(driver, pn, qty, rate_eur)
-            except Exception as e:
-                print(f"    Ошибка: {e}")
-                r = {"pn": pn, "qty": qty, "status": "RFQ"}
-            r["description"] = it.get("description", pn)
-            if not r.get("manufacturer"):
-                r["manufacturer"] = it.get("manufacturer", "")
-            if r.get("status") == "FOUND":
-                tag = "В наличии" if r.get("in_stock") else "под заказ"
-                print(f"    -> {r['distributor']}  ${r['price_usd']:.3f}"
-                      f"  ({tag}, склад {r['stock']}, MOQ {r['moq']})")
-            else:
-                print("    -> RFQ")
-            results.append(r)
-            import time as _t; _t.sleep(2)
-    finally:
+    for i, it in enumerate(items, 1):
+        pn = it.get("pn")
+        qty = it.get("qty", 1)
+        num = it.get("num", i)
+        print(f"\n[{i}/{len(items)}] #{num}: {pn or '(нет артикула)'}")
+        if not pn:
+            results.append({
+                "pn": "", "qty": qty,
+                "manufacturer": it.get("manufacturer", ""),
+                "description": it.get("description", ""),
+                "status": "RFQ",
+            })
+            continue
         try:
-            driver.quit()
-        except Exception:
-            pass
+            r = find_best_price(pn, qty)
+        except Exception as e:
+            print(f"    Ошибка: {e}")
+            r = {"pn": pn, "qty": qty, "status": "RFQ"}
+        r["description"] = it.get("description", pn)
+        if not r.get("manufacturer"):
+            r["manufacturer"] = it.get("manufacturer", "")
+        if r.get("status") == "FOUND":
+            tag = "В наличии" if r.get("in_stock") else "под заказ"
+            print(f"    -> {r['distributor']}  ${r['price_usd']:.3f}"
+                  f"  ({tag}, склад {r['stock']}, MOQ {r['moq']})")
+        else:
+            print("    -> RFQ")
+        results.append(r)
 
-    write_results(results, out_path, rate_eur, rate_rub)
+    write_results(results, out_path, rate_rub)
 
 
 if __name__ == "__main__":
