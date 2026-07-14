@@ -47,7 +47,7 @@ RESULTS = [
     {"pn": "SG-8002CA-PCM 50.0 MHz", "qty": 1300, "manufacturer": "Golledge (Epson)", "status": "RFQ"},
     {"pn": "LV0750000XMBDRX", "qty": 3600, "manufacturer": "PDI", "status": "RFQ"},
     {"pn": "CL7050-50.000-3.3-25-X-T-TR", "qty": 3600, "manufacturer": "Raltron Electronics",
-     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": None,
+     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": 14,
      "price_eur": 4.1610, "status": "FOUND"},
     {"pn": "511BBA50M0000AAGR", "qty": 3600, "manufacturer": "Skyworks Solutions",
      "distributor": "Mouser", "moq": 1, "stock": 0, "lead": None,
@@ -122,9 +122,9 @@ def build_bom(rate_eur, rate_rub):
             if in_stock:
                 lead_val = "In stock"
             elif lead is not None:
-                lead_val = lead
+                lead_val = f"{lead} weeks" if lead != 1 else "1 week"
             else:
-                lead_val = ""
+                lead_val = "RFQ" if stock == 0 else ""
 
             if "price_usd" in r:
                 usd = r["price_usd"]

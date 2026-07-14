@@ -42,7 +42,7 @@ RESULTS = [
      "price_eur": 0.0933, "status": "FOUND"},
     {"pn": "88E1112-XX-NNC-I000", "qty": 70, "manufacturer": "Marvell", "status": "RFQ"},
     {"pn": "MT9172AN1", "qty": 1500, "manufacturer": "Mitel (Microchip)",
-     "distributor": "Newark", "moq": 1, "stock": 0, "lead": None,
+     "distributor": "Newark", "moq": 1, "stock": 0, "lead": 9,
      "price_eur": 16.6447, "status": "FOUND"},
     {"pn": "MDC3105LT1G", "qty": 1200, "manufacturer": "ON Semiconductor",
      "distributor": "Farnell", "moq": 1, "stock": 0, "lead": None,
@@ -54,13 +54,13 @@ RESULTS = [
      "distributor": "Arrow", "moq": 1, "stock": 42, "lead": None,
      "price_eur": 73.477, "status": "FOUND"},
     {"pn": "W681512RG", "qty": 200, "manufacturer": "Nuvoton",
-     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": None,
+     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": 32,
      "price_eur": 1.8897, "status": "FOUND"},
     {"pn": "OP467GS", "qty": 1400, "manufacturer": "Analog Devices",
      "distributor": "Arrow", "moq": 1, "stock": 0, "lead": None,
      "price_eur": 18.153, "status": "FOUND"},
     {"pn": "XC6SLX100T-3FGG676I", "qty": 100, "manufacturer": "AMD (Xilinx)",
-     "distributor": "Farnell", "moq": 1, "stock": 0, "lead": None,
+     "distributor": "Farnell", "moq": 1, "stock": 0, "lead": 17,
      "price_eur": 338.58, "status": "FOUND"},
     {"pn": "ADM3222ARWZ", "qty": 1200, "manufacturer": "Analog Devices",
      "distributor": "Arrow", "moq": 1, "stock": 0, "lead": None,
@@ -89,10 +89,10 @@ RESULTS = [
      "distributor": "Arrow", "moq": 1, "stock": 0, "lead": None,
      "price_eur": 14.5205, "status": "FOUND"},
     {"pn": "SN74AHC244PW", "qty": 2100, "manufacturer": "Texas Instruments",
-     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": None,
+     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": 12,
      "price_eur": 0.2753, "status": "FOUND"},
     {"pn": "MAX3243EAI", "qty": 370, "manufacturer": "Analog Devices (Maxim)",
-     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": None,
+     "distributor": "DigiKey", "moq": 1, "stock": 0, "lead": 16,
      "price_eur": 8.2611, "status": "FOUND"},
     {"pn": "TPS7A7300RGWx", "qty": 650, "manufacturer": "Texas Instruments",
      "distributor": "Arrow", "moq": 1, "stock": 36, "lead": None,
@@ -366,9 +366,9 @@ def build_bom(rate_eur, rate_rub):
             if in_stock:
                 lead_val = "In stock"
             elif lead is not None:
-                lead_val = lead
+                lead_val = f"{lead} weeks" if lead != 1 else "1 week"
             else:
-                lead_val = ""
+                lead_val = "RFQ" if stock == 0 else ""
 
             if "price_usd" in r:
                 usd = r["price_usd"]

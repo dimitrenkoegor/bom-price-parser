@@ -252,10 +252,15 @@ def search_digikey(pn, qty):
         stock = int(p.get("QuantityAvailable") or 0)
         moq = int(p.get("MinimumOrderQuantity") or 1)
         manu = ((p.get("Manufacturer") or {}).get("Name")) or ""
+        lead_weeks = p.get("ManufacturerLeadWeeks")
+        try:
+            lead_weeks = int(lead_weeks) if lead_weeks not in (None, "") else None
+        except (ValueError, TypeError):
+            lead_weeks = None
         offers.append({
             "dist": "DigiKey", "pn": p.get("ProductVariations", [{}])[0].get("DigiKeyProductNumber", "")
                     if p.get("ProductVariations") else (p.get("DigiKeyPartNumber") or ""),
-            "stock": stock, "moq": moq, "lead": None, "tiers": tiers, "manu": manu,
+            "stock": stock, "moq": moq, "lead": lead_weeks, "tiers": tiers, "manu": manu,
         })
     return offers
 
@@ -303,9 +308,18 @@ def search_mouser(pn, qty):
         stock_str = re.sub(r"[^\d]", "", p.get("Availability") or "")
         stock = int(stock_str) if stock_str else 0
         moq = int(p.get("Min") or 1)
+        lead_weeks = None
+        lead_str = p.get("LeadTime") or ""
+        m = re.search(r"(\d+)\s*Day", lead_str, re.I)
+        if m:
+            lead_weeks = max(1, round(int(m.group(1)) / 7))
+        else:
+            m = re.search(r"(\d+)\s*Week", lead_str, re.I)
+            if m:
+                lead_weeks = int(m.group(1))
         offers.append({
             "dist": "Mouser", "pn": p.get("MouserPartNumber") or "",
-            "stock": stock, "moq": moq, "lead": None, "tiers": tiers,
+            "stock": stock, "moq": moq, "lead": lead_weeks, "tiers": tiers,
             "manu": p.get("Manufacturer") or "",
         })
     return offers
@@ -365,13 +379,109 @@ def search_farnell(pn, qty):
 
 
 # ─────────────────────────────────────────────
+# TME  (Product API v2, OAuth 2.0 client_credentials)
+# ─────────────────────────────────────────────
+
+_tme_token_cache = {"token": None, "expires_at": 0}
+
+
+def _tme_get_token():
+    now = time.time()
+    if _tme_token_cache["token"] and _tme_token_cache["expires_at"] > now + 30:
+        return _tme_token_cache["token"]
+
+    token = ENV.get("TME_TOKEN")        # 50-значный private key (логин Basic Auth)
+    secret = ENV.get("TME_APP_SECRET")  # 20-значный application secret (пароль)
+    if not token or not secret:
+        return None
+
+    import base64
+    basic = base64.b64encode(f"{token}:{secret}".encode()).decode()
+    data = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode()
+    req = urllib.request.Request("https://api.tme.eu/auth/token", data=data, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Authorization", "Basic " + basic)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode())
+        _tme_token_cache["token"] = d["access_token"]
+        _tme_token_cache["expires_at"] = now + int(d.get("expires_in", 300))
+        return d["access_token"]
+    except Exception as e:
+        print(f"    TME OAuth error: {e}")
+        return None
+
+
+def _tme_get(url, access):
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", "Bearer " + access)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode())
+
+
+def search_tme(pn, qty):
+    access = _tme_get_token()
+    if not access:
+        return []
+
+    # 1) ищем товар по MPN производителя
+    try:
+        d = _tme_get("https://api.tme.eu/products?" + urllib.parse.urlencode(
+            [("country", "DE"), ("mpns[]", pn)]), access)
+    except Exception as e:
+        print(f"    TME error: {e}")
+        return []
+
+    elements = (d.get("data") or {}).get("elements") or []
+    matches = {}
+    for p in elements:
+        mpns = [m.upper() for m in (p.get("manufacturer_symbols") or [])]
+        if pn.strip().upper() in mpns:
+            matches[p["symbol"]] = p
+    if not matches:
+        return []
+
+    # 2) цены + сток по символам TME (валюта USD)
+    try:
+        qs = [("country", "DE"), ("currency", "USD"),
+              ("scope[]", "prices"), ("scope[]", "stock")]
+        qs += [("symbols[]", s) for s in list(matches)[:50]]
+        d = _tme_get("https://api.tme.eu/products/data?" + urllib.parse.urlencode(qs), access)
+    except Exception as e:
+        print(f"    TME data error: {e}")
+        return []
+
+    offers = []
+    for el in (d.get("data") or {}).get("elements") or []:
+        sym = el.get("symbol")
+        prod = matches.get(sym)
+        if not prod:
+            continue
+        price_info = el.get("prices") or {}
+        tiers = []
+        for t in price_info.get("elements") or []:
+            if t.get("price") is not None and t.get("amount") is not None:
+                tiers.append({"qty": int(t["amount"]), "price": float(t["price"])})
+        if not tiers:
+            continue
+        stock = int(el.get("stock_quantity") or 0)
+        moq = int(prod.get("minimal_amount") or 1)
+        manu = ((prod.get("manufacturer") or {}).get("name")) or ""
+        offers.append({
+            "dist": "TME", "pn": sym, "stock": stock, "moq": moq,
+            "lead": None, "tiers": tiers, "manu": manu,
+        })
+    return offers
+
+
+# ─────────────────────────────────────────────
 # ВЫБОР ЛУЧШЕЙ ЦЕНЫ
 # ─────────────────────────────────────────────
 
 def find_best_price(pn, qty):
     print(f"    qty={qty}")
     offers = []
-    for search_fn in (search_digikey, search_mouser, search_farnell):
+    for search_fn in (search_digikey, search_mouser, search_farnell, search_tme):
         try:
             offers.extend(search_fn(pn, qty))
         except Exception as e:
@@ -385,8 +495,10 @@ def find_best_price(pn, qty):
         tier, min_not_met = pick_tier(o["tiers"], qty)
         price_usd = tier["price"]
         stock = o.get("stock", 0)
-        lead = o.get("lead")
-        in_stock = stock > 0 and lead is None
+        # В наличии = стока хватает на запрошенное кол-во.
+        # Lead time (недели) актуален только при нехватке стока.
+        in_stock = stock >= qty
+        lead = None if in_stock else o.get("lead")
         cand = {
             "pn": pn, "distr_pn": o.get("pn", ""),
             "manufacturer": o.get("manu", ""),
@@ -674,7 +786,15 @@ def write_results(results, output_path, rate_rub):
             dist_pn = r.get("distr_pn") or ""
             b_val = dist_pn if packaging_only_suffix(pn, dist_pn) else ""
             lead = r.get("lead")
-            lead_val = "In stock" if (r.get("in_stock") and not lead) else (lead if lead is not None else "")
+            stock_v = r.get("stock", 0)
+            if r.get("in_stock") and not lead:
+                lead_val = "In stock"
+            elif lead is not None:
+                lead_val = f"{lead} weeks" if lead != 1 else "1 week"
+            elif not stock_v:
+                lead_val = "уточнить у поставщика"
+            else:
+                lead_val = ""
             usd = r.get("price_usd")
             rub = round(usd * rate_rub, 2) if usd is not None else None
             vals = [
@@ -817,6 +937,7 @@ def main():
         ("DigiKey", ENV.get("DIGIKEY_CLIENT_ID")),
         ("Mouser", ENV.get("MOUSER_API_KEY")),
         ("Newark/Farnell", ENV.get("FARNELL_API_KEY")),
+        ("TME", ENV.get("TME_TOKEN")),
     ) if val]
     if not have_keys:
         print("\nВНИМАНИЕ: в .env не найдено ни одного API-ключа. "

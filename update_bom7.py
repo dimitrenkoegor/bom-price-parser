@@ -172,9 +172,9 @@ def build_bom(rate_eur, rate_rub):
             if in_stock:
                 lead_val = "In stock"
             elif lead is not None:
-                lead_val = lead
+                lead_val = f"{lead} weeks" if lead != 1 else "1 week"
             else:
-                lead_val = ""
+                lead_val = "RFQ" if stock == 0 else ""
 
             if "price_usd" in r:
                 usd = r["price_usd"]

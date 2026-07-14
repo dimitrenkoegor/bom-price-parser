@@ -137,7 +137,12 @@ def build_bom(results, output_path, rate_rub, source_note=""):
             stock = r.get("stock", 0)
             lead  = r.get("lead")
             in_stock = stock > 0 and lead is None
-            lead_val = "In stock" if in_stock else (lead if lead is not None else "")
+            if in_stock:
+                lead_val = "In stock"
+            elif lead is not None:
+                lead_val = f"{lead} weeks" if lead != 1 else "1 week"
+            else:
+                lead_val = "RFQ" if stock == 0 else ""
 
             usd = r["price_usd"]
             rub = round(usd * rate_rub, 2)
