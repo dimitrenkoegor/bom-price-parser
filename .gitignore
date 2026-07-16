@@ -6,3 +6,10 @@ final/
 *.tmp
 ~$*
 .env
+jobs_mail/
+mail-state.json
+monitor.log
+monitor.out.log
+monitor.err.log
+monitor.pid
+STOP_MONITOR
