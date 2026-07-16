@@ -74,14 +74,38 @@ RU_TYPE_WORDS = [
     "резистор", "диод", "транзистор", "разъём", "разъем", "дроссель", "реле",
     "стабилизатор", "преобразователь", "фильтр", "индуктивность", "катушка",
     "вилка", "розетка", "переключатель", "кварц", "резонатор", "предохранитель",
+    "генератор", "кнопка", "термистор", "оптопара", "оптореле", "датчик",
 ]
 # Известные производители — отбрасываем из хвоста наименования (и пишем в Manufacturer)
 KNOWN_MFR = [
     "Traco Power", "TracoPower", "Traco", "Murata", "Vishay", "TDK", "Bourns",
     "Panasonic", "Rohm", "Littelfuse", "Yageo", "Kemet", "AVX", "Nichicon",
     "Wurth", "Würth", "TE Connectivity", "Molex", "Samsung", "Kyocera",
-    "Knowles", "Voltronics", "Dalicap", "Hitano", "Jamicon", "Epcos",
+    "Knowles", "Voltronics", "Dalicap", "Hitano", "Jamicon", "Epcos", "Jauch",
+    "Epson", "Golledge", "Avago Technologies", "Broadcom", "Axicom", "Cosmo",
+    "Susumu", "Meggitt Electronics", "Fujitsu", "Switronic",
 ]
+
+CYRILLIC_LOOKALIKES = str.maketrans({
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H",
+    "О": "O", "Р": "P", "С": "C", "Т": "T", "Х": "X",
+    "а": "a", "е": "e", "к": "k", "м": "m", "о": "o", "р": "p",
+    "с": "c", "т": "t", "х": "x",
+})
+
+MANUFACTURER_ALIASES = {
+    "avagotechnologies": "broadcomavago",
+    "avago": "broadcomavago",
+    "broadcom": "broadcomavago",
+    "broadcomavago": "broadcomavago",
+    "teconnectfivity": "teconnectivityaxicom",
+    "teconnectivity": "teconnectivityaxicom",
+    "axicom": "teconnectivityaxicom",
+    "teconnectivityaxicom": "teconnectivityaxicom",
+    "epcos": "tdkepcos",
+    "tdk": "tdkepcos",
+    "tdkepcos": "tdkepcos",
+}
 
 
 # ─────────────────────────────────────────────
@@ -103,6 +127,22 @@ def load_env(path=ENV_PATH):
 
 
 ENV = load_env()
+
+
+def fetch_bytes(req, timeout=15, attempts=2):
+    """Повторяет только временные сетевые ошибки, не скрывая постоянные HTTP-ошибки."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code == 429 or 500 <= exc.code <= 599
+            if attempt >= attempts or not retryable:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt >= attempts:
+                raise
+        time.sleep(attempt)
 
 
 # ─────────────────────────────────────────────
@@ -160,6 +200,69 @@ def get_usd_rub(markup=4.0, manual=None):
 # }
 
 
+def canonical_mpn(value):
+    """Нормализует только незначимые различия записи MPN, не характеристики."""
+    text = str(value or "").translate(CYRILLIC_LOOKALIKES).upper().strip()
+    text = text.replace("–", "-").replace("—", "-").replace(",", ".")
+    return re.sub(r"\s+", "", text).strip(".;")
+
+
+def canonical_mpn_loose(value):
+    """Как canonical_mpn, но дополнительно убирает все разделители
+    (дефисы, точки, слэши, пробелы). Нужно, чтобы разница в РАССТАНОВКЕ
+    дефисов не мешала совпадению: '3310Y001-103L' == '3310Y-001-103L'.
+    Значимые буквы/цифры сохраняются, поэтому характеристики не путаются."""
+    return re.sub(r"[^A-Z0-9]", "", canonical_mpn(value))
+
+
+def mpn_matches(requested, candidate):
+    if not requested or not candidate:
+        return False
+    if canonical_mpn(requested) == canonical_mpn(candidate):
+        return True
+    loose = canonical_mpn_loose(requested)
+    return bool(loose) and loose == canonical_mpn_loose(candidate)
+
+
+def canonical_manufacturer(value):
+    key = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+    if "avago" in key or "broadcom" in key:
+        return "broadcomavago"
+    if "axicom" in key or "teconnect" in key:
+        return "teconnectivityaxicom"
+    if "epcos" in key or key.startswith("tdk"):
+        return "tdkepcos"
+    return MANUFACTURER_ALIASES.get(key, key)
+
+
+def manufacturer_matches(requested, candidate):
+    """Не допускает цену другого производителя при явно указанном бренде."""
+    if not requested:
+        return True
+    left = canonical_manufacturer(requested)
+    right = canonical_manufacturer(candidate)
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def part_search_variants(pn):
+    variants = []
+    raw = str(pn or "").strip()
+    candidates = [raw]
+    if re.search(r"[A-Za-z]{2,}", raw):
+        candidates.append(
+            re.sub(r"^([QO])\s+(?=\d)", r"\1", raw.replace(",", "."), flags=re.I)
+        )
+    seen = set()
+    for value in candidates:
+        key = value.casefold()
+        if value and key not in seen:
+            variants.append(value)
+            seen.add(key)
+    return variants
+
+
 def pick_tier(tiers, qty):
     """Возвращает (tier, min_not_met) — тир с наибольшим qty ≤ запрошенного,
     либо самый маленький тир, если такого нет (и флаг min_not_met=True)."""
@@ -194,8 +297,7 @@ def _digikey_get_token():
     req = urllib.request.Request("https://api.digikey.com/v1/oauth2/token", data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.loads(r.read().decode())
+        d = json.loads(fetch_bytes(req).decode())
         _digikey_token_cache["token"] = d["access_token"]
         _digikey_token_cache["expires_at"] = now + int(d.get("expires_in", 600))
         return d["access_token"]
@@ -222,8 +324,7 @@ def search_digikey(pn, qty):
     req.add_header("X-DIGIKEY-Locale-Currency", "USD")
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.loads(r.read().decode())
+        d = json.loads(fetch_bytes(req).decode())
     except urllib.error.HTTPError as e:
         print(f"    DigiKey HTTP {e.code}: {e.read().decode()[:200]}")
         return []
@@ -235,7 +336,7 @@ def search_digikey(pn, qty):
     for p in d.get("Products", []) or []:
         # Берём только точное совпадение по PN производителя (без опечаток/аналогов)
         mpn = (p.get("ManufacturerProductNumber") or "").strip()
-        if mpn.upper() != pn.strip().upper():
+        if not mpn_matches(pn, mpn):
             continue
         tiers = []
         for sp in p.get("StandardPricing", []) or []:
@@ -260,6 +361,7 @@ def search_digikey(pn, qty):
         offers.append({
             "dist": "DigiKey", "pn": p.get("ProductVariations", [{}])[0].get("DigiKeyProductNumber", "")
                     if p.get("ProductVariations") else (p.get("DigiKeyPartNumber") or ""),
+            "mpn": mpn,
             "stock": stock, "moq": moq, "lead": lead_weeks, "tiers": tiers, "manu": manu,
         })
     return offers
@@ -278,8 +380,7 @@ def search_mouser(pn, qty):
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.loads(r.read().decode())
+        d = json.loads(fetch_bytes(req).decode())
     except Exception as e:
         print(f"    Mouser error: {e}")
         return []
@@ -293,7 +394,7 @@ def search_mouser(pn, qty):
     offers = []
     for p in results:
         mpn = (p.get("ManufacturerPartNumber") or "").strip()
-        if mpn.upper() != pn.strip().upper():
+        if not mpn_matches(pn, mpn):
             continue
         tiers = []
         for pb in p.get("PriceBreaks", []) or []:
@@ -318,7 +419,7 @@ def search_mouser(pn, qty):
             if m:
                 lead_weeks = int(m.group(1))
         offers.append({
-            "dist": "Mouser", "pn": p.get("MouserPartNumber") or "",
+            "dist": "Mouser", "pn": p.get("MouserPartNumber") or "", "mpn": mpn,
             "stock": stock, "moq": moq, "lead": lead_weeks, "tiers": tiers,
             "manu": p.get("Manufacturer") or "",
         })
@@ -345,8 +446,7 @@ def search_farnell(pn, qty):
     url = "https://api.element14.com/catalog/products?" + params
     req = urllib.request.Request(url)
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.loads(r.read().decode())
+        d = json.loads(fetch_bytes(req).decode())
     except Exception as e:
         print(f"    Newark/Farnell error: {e}")
         return []
@@ -355,7 +455,7 @@ def search_farnell(pn, qty):
     offers = []
     for p in products:
         mpn = (p.get("translatedManufacturerPartNumber") or "").strip()
-        if mpn.upper() != pn.strip().upper():
+        if not mpn_matches(pn, mpn):
             continue
         tiers = []
         for pb in p.get("prices", []) or []:
@@ -370,7 +470,7 @@ def search_farnell(pn, qty):
         lead = stock_info.get("leastLeadTime")
         moq = int(p.get("translatedMinimumOrderQuality") or 1)
         offers.append({
-            "dist": "Newark/Farnell", "pn": p.get("sku") or "",
+            "dist": "Newark/Farnell", "pn": p.get("sku") or "", "mpn": mpn,
             "stock": stock, "moq": moq,
             "lead": int(lead) if lead else None,
             "tiers": tiers, "manu": p.get("brandName") or "",
@@ -402,8 +502,7 @@ def _tme_get_token():
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     req.add_header("Authorization", "Basic " + basic)
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.loads(r.read().decode())
+        d = json.loads(fetch_bytes(req).decode())
         _tme_token_cache["token"] = d["access_token"]
         _tme_token_cache["expires_at"] = now + int(d.get("expires_in", 300))
         return d["access_token"]
@@ -415,8 +514,7 @@ def _tme_get_token():
 def _tme_get(url, access):
     req = urllib.request.Request(url)
     req.add_header("Authorization", "Bearer " + access)
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read().decode())
+    return json.loads(fetch_bytes(req).decode())
 
 
 def search_tme(pn, qty):
@@ -435,8 +533,8 @@ def search_tme(pn, qty):
     elements = (d.get("data") or {}).get("elements") or []
     matches = {}
     for p in elements:
-        mpns = [m.upper() for m in (p.get("manufacturer_symbols") or [])]
-        if pn.strip().upper() in mpns:
+        mpns = p.get("manufacturer_symbols") or []
+        if any(mpn_matches(pn, mpn) for mpn in mpns):
             matches[p["symbol"]] = p
     if not matches:
         return []
@@ -467,8 +565,9 @@ def search_tme(pn, qty):
         stock = int(el.get("stock_quantity") or 0)
         moq = int(prod.get("minimal_amount") or 1)
         manu = ((prod.get("manufacturer") or {}).get("name")) or ""
+        matched_mpn = next((m for m in (prod.get("manufacturer_symbols") or []) if mpn_matches(pn, m)), pn)
         offers.append({
-            "dist": "TME", "pn": sym, "stock": stock, "moq": moq,
+            "dist": "TME", "pn": sym, "mpn": matched_mpn, "stock": stock, "moq": moq,
             "lead": None, "tiers": tiers, "manu": manu,
         })
     return offers
@@ -478,17 +577,42 @@ def search_tme(pn, qty):
 # ВЫБОР ЛУЧШЕЙ ЦЕНЫ
 # ─────────────────────────────────────────────
 
-def find_best_price(pn, qty):
-    print(f"    qty={qty}")
-    offers = []
+def _collect_offers(query, qty, manufacturer):
+    """Опрашивает все API одним запросом и фильтрует по производителю."""
+    query_offers = []
     for search_fn in (search_digikey, search_mouser, search_farnell, search_tme):
         try:
-            offers.extend(search_fn(pn, qty))
+            query_offers.extend(search_fn(query, qty))
         except Exception as e:
             print(f"    {search_fn.__name__} ошибка: {e}")
+    return [o for o in query_offers if manufacturer_matches(manufacturer, o.get("manu", ""))]
+
+
+def find_best_price(pn, qty, manufacturer=""):
+    print(f"    qty={qty}")
+    offers = []
+    for query in part_search_variants(pn):
+        offers = _collect_offers(query, qty, manufacturer)
+        if offers:
+            break
+
+    # Второй проход: если запрос отличался от настоящего MPN только расстановкой
+    # разделителей (DigiKey находит нечётко, Mouser/TME/Farnell — только по точному
+    # MPN), повторяем поиск точным MPN, чтобы подтянуть остальных дистрибьюторов
+    # (часто дешевле) и выбрать реальный минимум по регламенту.
+    if offers:
+        resolved = [o.get("mpn", "").strip() for o in offers if o.get("mpn")]
+        target = next((m for m in resolved if canonical_mpn(m) != canonical_mpn(pn)), "")
+        if target:
+            seen = {(o["dist"], o.get("pn", "")) for o in offers}
+            for extra in _collect_offers(target, qty, manufacturer):
+                sig = (extra["dist"], extra.get("pn", ""))
+                if sig not in seen:
+                    offers.append(extra)
+                    seen.add(sig)
 
     if not offers:
-        return {"pn": pn, "qty": qty, "status": "RFQ"}
+        return {"pn": pn, "qty": qty, "manufacturer": manufacturer, "status": "RFQ"}
 
     best = None
     for o in offers:
@@ -517,62 +641,109 @@ def find_best_price(pn, qty):
 # ИЗВЛЕЧЕНИЕ АРТИКУЛА ИЗ ОПИСАНИЯ
 # ─────────────────────────────────────────────
 
-def split_manufacturer(desc):
-    """Возвращает (описание_без_производителя, производитель|None)."""
-    for mfr in sorted(KNOWN_MFR, key=len, reverse=True):
-        m = re.search(re.escape(mfr) + r"\s*$", desc, re.I)
-        if m:
-            return desc[:m.start()].strip(" -,"), mfr
-    return desc, None
+def clean_spaces(value):
+    return re.sub(r"\s+", " ", str(value or "").replace("\u00a0", " ")).strip()
 
 
-def extract_pn_from_description(desc):
-    """
-    Извлекает партномер из текстового наименования.
-    Правила:
-    - Убираем ведущее типовое слово (КОНДЕНСАТОР, РЕЗИСТОР и т.п.)
-    - Убираем производителя из хвоста
-    - Из оставшихся токенов берём первый, похожий на артикул:
-      содержит буквы+цифры, без "/" и "(", без кириллицы
-    - Токены со спецсимволами "/" или "," (спецификации: NM-0,5/8) отбрасываем
-    """
+def split_manufacturer(desc, manufacturer_hint=""):
+    """Возвращает (описание без бренда, бренд), используя колонку бренда как приоритет."""
+    text = clean_spaces(desc)
+    candidates = []
+    if manufacturer_hint:
+        candidates.append(clean_spaces(manufacturer_hint))
+    candidates.extend(KNOWN_MFR)
+    seen = set()
+    for mfr in sorted(candidates, key=len, reverse=True):
+        key = mfr.casefold()
+        if not mfr or key in seen:
+            continue
+        seen.add(key)
+        match = re.search(r"(?:\s*[,;\-]\s*|\s+)" + re.escape(mfr) + r"\s*$", text, re.I)
+        if match:
+            return text[:match.start()].strip(" -,;"), clean_spaces(manufacturer_hint) or mfr
+    return text, clean_spaces(manufacturer_hint) or None
+
+
+def strip_product_type(text):
+    body = clean_spaces(text)
+    for word in sorted(RU_TYPE_WORDS, key=len, reverse=True):
+        updated = re.sub(r"^" + re.escape(word) + r"(?:\s+|\s*[:\-]\s*)", "", body, count=1, flags=re.I)
+        if updated != body:
+            return updated.strip(" -:")
+    # Неизвестное русское название изделия в начале также не является MPN.
+    return re.sub(r"^(?:[А-ЯЁа-яё][А-ЯЁа-яё-]*\s+)+(?=.*\d)", "", body).strip(" -:")
+
+
+def normalize_cyrillic_units(text):
+    value = str(text or "")
+    replacements = (
+        (r"(?<=\d)\s*МОМ\b", "M"),
+        (r"(?<=\d)\s*КОМ\b", "K"),
+        (r"(?<=\d)\s*ОМ\b", "R"),
+        (r"(?<=\d)\s*МГЦ\b", "MHz"),
+        (r"(?<=\d)\s*КГЦ\b", "kHz"),
+        (r"(?<=\d)\s*ГЦ\b", "Hz"),
+    )
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value, flags=re.I)
+    value = re.sub(r"(?<=%)\s*[Хх]\b", "", value)
+    value = value.translate(CYRILLIC_LOOKALIKES)
+    value = re.sub(r"[А-ЯЁа-яё]+", "", value)
+    return clean_spaces(value).strip(" -,;")
+
+
+def _token_value(token):
+    return str(token or "").strip("()[]{};,\"")
+
+
+def _append_part_context(tokens, index, candidate):
+    start = index
+    if index > 0 and re.fullmatch(r"[QO]", _token_value(tokens[index - 1]), re.I):
+        start -= 1
+    elif index > 0 and re.fullmatch(r"\d{1,3}", _token_value(tokens[index - 1])) and "/" in candidate:
+        start -= 1
+
+    selected = [_token_value(t) for t in tokens[start:index + 1]]
+    tail = [_token_value(t) for t in tokens[index + 1:index + 3]]
+    if tail:
+        if re.fullmatch(r"\d+(?:[.,]\d+)?(?:k?Hz|MHz|GHz)", tail[0], re.I):
+            selected.append(tail[0])
+        elif len(tail) >= 2 and re.fullmatch(r"\d+(?:[.,]\d+)?", tail[0]) and re.fullmatch(r"(?:k?Hz|MHz|GHz)", tail[1], re.I):
+            selected.extend(tail[:2])
+        elif re.fullmatch(r"[A-Z]{1,3}", tail[0]) and "/" in candidate:
+            selected.append(tail[0])
+    return " ".join(part for part in selected if part).strip(" -,;")
+
+
+def extract_pn_from_description(desc, manufacturer_hint=""):
+    """Отделяет тип изделия и бренд, сохраняя запятые, дроби и значимые префиксы MPN."""
     if not desc:
         return None
-    body, _ = split_manufacturer(desc.strip())
-    low = body.lower()
-    for w in sorted(RU_TYPE_WORDS, key=len, reverse=True):
-        if low.startswith(w):
-            body = body[len(w):].strip(" -:")
-            break
+    body, _ = split_manufacturer(desc, manufacturer_hint)
+    body = strip_product_type(body)
+    if not body:
+        return None
 
-    pn_candidates = []
-    spec_candidates = []  # токены выглядят как спецификации — запасной вариант
+    # Реальные отечественные обозначения не латинизируем и не режем.
+    domestic = re.search(r"\b\d[А-ЯЁ]{1,5}\d[А-ЯЁ0-9.\-/]*\b", body, re.I)
+    if domestic:
+        return domestic.group(0).strip(" -,;")
 
-    for t in body.split():
-        t = t.strip("();,")
-        if not t:
+    raw_tokens = body.split()
+    for index, raw in enumerate(raw_tokens):
+        token = _token_value(raw)
+        if re.search(r"[А-ЯЁа-яё]", token):
             continue
-        if re.search(r"[а-яёА-ЯЁ]", t):
-            continue                              # кириллица — пропуск
-        if len(t) < 3:
-            continue
-        if re.fullmatch(r"[\d.,+\-±%]+", t):
-            continue                              # чистое число/процент — пропуск
-        if "/" in t or ("," in t and re.search(r"\d,\d", t)):
-            spec_candidates.append(t)            # спецификация (NM-0,5/8ПФ)
-            continue
-        if t.startswith("(") or t.endswith(")"):
-            t = t.strip("()")
-        if re.search(r"[A-Za-z]", t) and re.search(r"\d", t):
-            pn_candidates.append(t)              # содержит буквы И цифры → PN
-        elif re.fullmatch(r"[A-Z]{2,}", t):
-            pn_candidates.append(t)              # аббревиатура заглавными
+        if re.search(r"[A-Za-z]", token) and re.search(r"\d", token):
+            return _append_part_context(raw_tokens, index, token)
 
-    if pn_candidates:
-        return pn_candidates[0]                  # первый подходящий токен
-    if spec_candidates:
-        return None                              # только спецификации — нет PN
-    return None
+    cleaned = normalize_cyrillic_units(body)
+    cleaned_tokens = cleaned.split()
+    for index, raw in enumerate(cleaned_tokens):
+        token = _token_value(raw)
+        if re.search(r"\d", token) and (re.search(r"[A-Za-z]", token) or re.search(r"[./,+\-%]", token)):
+            return _append_part_context(cleaned_tokens, index, token)
+    return cleaned or None
 
 
 # ─────────────────────────────────────────────
@@ -596,7 +767,7 @@ def read_request_xlsx(path):
     for r in range(1, min(ws.max_row, 40) + 1):
         cells = [(c, ws.cell(row=r, column=c).value) for c in range(1, ws.max_column + 1)]
         texts = " ".join(str(v).lower() for _, v in cells if v)
-        if (("наименован" in texts or "part number" in texts or "условное обознач" in texts)
+        if (("наименован" in texts or "part number" in texts or "partnumber" in texts or "условное обознач" in texts)
                 and ("количеств" in texts or "qty" in texts or "quantity" in texts)):
             header_row = r
             headers = [(c, v) for c, v in cells if v]
@@ -605,10 +776,10 @@ def read_request_xlsx(path):
         raise ValueError("Не нашёл строку-шапку в Excel. Проверьте файл или подайте input.txt.")
 
     col_num = _find(headers, "№", "n п/п", "п/п")
-    col_pn = _find(headers, "условное обознач", "part number", "артикул", "парт")
+    col_pn = _find(headers, "условное обознач", "part number", "partnumber", "артикул", "парт")
     col_desc = _find(headers, "наименован", "товар")
     col_qty = _find(headers, "количеств", "qty", "quantity", "кол-во")
-    col_mfr = _find(headers, "производител", "manufacturer", "изготовит")
+    col_mfr = _find(headers, "производител", "manufacturer", "изготовит", "brand")
 
     print(f"Шапка в строке {header_row}. Колонки: PN={col_pn}, Наименование={col_desc}, "
           f"Кол-во={col_qty}, Производитель={col_mfr}")
@@ -632,13 +803,14 @@ def read_request_xlsx(path):
             continue                     # нечисловое кол-во — тоже примечание
         if qty <= 0:
             continue
-        # производитель: из колонки, иначе из хвоста наименования
+        # Производитель: из отдельной колонки, иначе из хвоста наименования.
         mfr = mfr_cell
         if not mfr and desc:
             _, m = split_manufacturer(desc)
             mfr = m or ""
-        # PN: из колонки, иначе из описания
-        pn = pn_cell or (extract_pn_from_description(desc) or "")
+        # Даже колонка PN иногда содержит «тип + MPN + бренд», поэтому чистим оба варианта.
+        pn_source = pn_cell or desc
+        pn = extract_pn_from_description(pn_source, mfr) or ""
         items.append({
             "num": int(num) if isinstance(num, (int, float)) else len(items) + 1,
             "pn": pn, "qty": qty, "manufacturer": mfr, "description": desc or pn,
@@ -723,8 +895,14 @@ def read_preview(path):
             qty = int(float(qty)) if qty not in (None, "") else 1
         except (ValueError, TypeError):
             qty = 1
-        items.append({"num": num or len(items) + 1, "pn": str(pn).strip() if pn else "",
-                      "qty": qty, "manufacturer": str(mfr).strip() if mfr else "",
+        mfr_text = str(mfr).strip() if mfr else ""
+        # Колонка PN в превью уже содержит извлечённый (или вручную исправленный
+        # пользователем) артикул — берём как есть. Повторный прогон extract_* по
+        # уже чистому PN портит сложные обозначения (резонаторы: пробелы, запятые,
+        # дроби), поэтому НЕ извлекаем повторно.
+        pn_text = str(pn).strip() if pn else ""
+        items.append({"num": num or len(items) + 1, "pn": pn_text,
+                      "qty": qty, "manufacturer": mfr_text,
                       "description": str(desc).strip() if desc else (str(pn) if pn else "")})
     return items
 
@@ -779,7 +957,9 @@ def write_results(results, output_path, rate_rub):
     for i, r in enumerate(results):
         row = i + 2
         ws.row_dimensions[row].height = 16
-        pn = r.get("pn") or r.get("description") or ""
+        pn = r.get("pn") or extract_pn_from_description(
+            r.get("description", ""), r.get("manufacturer", "")
+        ) or ""
         if r.get("status") == "FOUND":
             base = F_R1 if found_idx % 2 == 0 else F_R2
             found_idx += 1
@@ -855,7 +1035,7 @@ def write_results(results, output_path, rate_rub):
 def load_items(args):
     if args.once:
         return [{"num": 1, "pn": args.once[0], "qty": int(args.once[1]),
-                 "manufacturer": "", "description": args.once[0]}]
+                 "manufacturer": args.manufacturer or "", "description": args.once[0]}]
     if args.input:
         path = Path(args.input)
         if not path.is_absolute():
@@ -883,6 +1063,7 @@ def main():
     ap.add_argument("--input", "-i", default=None, help="Excel/txt запрос. По умолч. авто-выбор")
     ap.add_argument("--output", "-o", default=None)
     ap.add_argument("--once", nargs=2, metavar=("PN", "QTY"), help="Одна позиция для проверки")
+    ap.add_argument("--manufacturer", default="", help="Производитель для режима --once")
     ap.add_argument("--rub-rate", type=float, default=None,
                     help="Курс USD/RUB вручную (иначе берётся с ЦБ)")
     ap.add_argument("--rub-markup", type=float, default=4.0,
@@ -891,11 +1072,13 @@ def main():
                     help="Только распознать в превью, без поиска цен")
     ap.add_argument("--from-preview", action="store_true",
                     help="Сразу читать превью_позиции.xlsx")
+    ap.add_argument("--preview-path", type=Path, default=None,
+                    help="Путь к превью; нужен для изолированной обработки очереди")
     ap.add_argument("--yes", "-y", action="store_true", help="Не спрашивать подтверждение")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
 
-    preview_path = SCRIPT_DIR / PREVIEW_NAME
+    preview_path = args.preview_path or (SCRIPT_DIR / PREVIEW_NAME)
 
     # 1) получить позиции
     if args.from_preview and preview_path.exists():
@@ -954,17 +1137,20 @@ def main():
         pn = it.get("pn")
         qty = it.get("qty", 1)
         num = it.get("num", i)
+        manufacturer = it.get("manufacturer", "")
         print(f"\n[{i}/{len(items)}] #{num}: {pn or '(нет артикула)'}")
-        if not pn:
+        if not pn or not manufacturer:
             results.append({
-                "pn": "", "qty": qty,
-                "manufacturer": it.get("manufacturer", ""),
+                "pn": pn or "", "qty": qty,
+                "manufacturer": manufacturer,
                 "description": it.get("description", ""),
                 "status": "RFQ",
             })
+            if pn and not manufacturer:
+                print("    -> RFQ: производитель не указан")
             continue
         try:
-            r = find_best_price(pn, qty)
+            r = find_best_price(pn, qty, manufacturer)
         except Exception as e:
             print(f"    Ошибка: {e}")
             r = {"pn": pn, "qty": qty, "status": "RFQ"}
