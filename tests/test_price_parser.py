@@ -76,7 +76,7 @@ class SearchValidationTests(unittest.TestCase):
             "lead": None, "tiers": [{"qty": 1, "price": 0.02}], "manu": "Jauch",
         }
 
-        def digikey(query, _qty):
+        def digikey(query, _qty, match_pn=None):
             return [correct] if "." in query else [wrong]
 
         with patch.object(parser, "search_digikey", side_effect=digikey), \

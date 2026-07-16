@@ -105,6 +105,10 @@ MANUFACTURER_ALIASES = {
     "epcos": "tdkepcos",
     "tdk": "tdkepcos",
     "tdkepcos": "tdkepcos",
+    # Fujitsu продала релейный бизнес — дистрибьюторы значат его как FCL Components
+    "fujitsu": "fujitsufcl",
+    "fcl": "fujitsufcl",
+    "fclcomponents": "fujitsufcl",
 }
 
 
@@ -215,13 +219,41 @@ def canonical_mpn_loose(value):
     return re.sub(r"[^A-Z0-9]", "", canonical_mpn(value))
 
 
+# Суффиксы, меняющие только упаковку/исполнение поставки, не характеристики
+# (регламент: T/tape&reel, K/bulk, L и LF/RoHS, CT/cut tape, TR)
+PACKAGING_TAILS = {"LF", "L", "T", "TR", "CT", "K"}
+
+
+def split_mask(requested):
+    """Маска регламента: строчные 'x' в конце артикула = «любой суффикс подходит»
+    (3313J-1-104x -> 3313J-1-104E). Заглавная X считается частью реального PN
+    (EXB28V220JX). Возвращает (база без маски, был_ли_x)."""
+    raw = str(requested or "").strip()
+    m = re.search(r"[xх]+$", raw)  # только строчные латинская x / кириллическая х
+    if m and m.start() > 0:
+        return raw[:m.start()].rstrip("-. "), True
+    return raw, False
+
+
 def mpn_matches(requested, candidate):
     if not requested or not candidate:
         return False
+    base, masked = split_mask(requested)
+    cand_loose = canonical_mpn_loose(candidate)
+    if masked:
+        base_loose = canonical_mpn_loose(base)
+        return bool(base_loose) and cand_loose.startswith(base_loose)
     if canonical_mpn(requested) == canonical_mpn(candidate):
         return True
     loose = canonical_mpn_loose(requested)
-    return bool(loose) and loose == canonical_mpn_loose(candidate)
+    if not loose:
+        return False
+    if loose == cand_loose:
+        return True
+    # Упаковочный суффикс у дистрибьютора: CR0805-JW-390E -> CR0805-JW-390ELF
+    if cand_loose.startswith(loose) and cand_loose[len(loose):] in PACKAGING_TAILS:
+        return True
+    return False
 
 
 def canonical_manufacturer(value):
@@ -232,6 +264,8 @@ def canonical_manufacturer(value):
         return "teconnectivityaxicom"
     if "epcos" in key or key.startswith("tdk"):
         return "tdkepcos"
+    if "fujitsu" in key or key.startswith("fcl"):
+        return "fujitsufcl"
     return MANUFACTURER_ALIASES.get(key, key)
 
 
@@ -254,6 +288,9 @@ def part_search_variants(pn):
         candidates.append(
             re.sub(r"^([QO])\s+(?=\d)", r"\1", raw.replace(",", "."), flags=re.I)
         )
+    base, masked = split_mask(raw)
+    if masked and base:
+        candidates.append(base)          # маска x: ищем по базе — API вернёт все суффиксы
     seen = set()
     for value in candidates:
         key = value.casefold()
@@ -306,7 +343,8 @@ def _digikey_get_token():
         return None
 
 
-def search_digikey(pn, qty):
+def search_digikey(pn, qty, match_pn=None):
+    match_pn = match_pn or pn
     client_id = ENV.get("DIGIKEY_CLIENT_ID")
     if not client_id:
         return []
@@ -336,7 +374,7 @@ def search_digikey(pn, qty):
     for p in d.get("Products", []) or []:
         # Берём только точное совпадение по PN производителя (без опечаток/аналогов)
         mpn = (p.get("ManufacturerProductNumber") or "").strip()
-        if not mpn_matches(pn, mpn):
+        if not mpn_matches(match_pn, mpn):
             continue
         tiers = []
         for sp in p.get("StandardPricing", []) or []:
@@ -371,7 +409,8 @@ def search_digikey(pn, qty):
 # MOUSER  (Search API)
 # ─────────────────────────────────────────────
 
-def search_mouser(pn, qty):
+def search_mouser(pn, qty, match_pn=None):
+    match_pn = match_pn or pn
     key = ENV.get("MOUSER_API_KEY")
     if not key:
         return []
@@ -394,7 +433,7 @@ def search_mouser(pn, qty):
     offers = []
     for p in results:
         mpn = (p.get("ManufacturerPartNumber") or "").strip()
-        if not mpn_matches(pn, mpn):
+        if not mpn_matches(match_pn, mpn):
             continue
         tiers = []
         for pb in p.get("PriceBreaks", []) or []:
@@ -430,7 +469,8 @@ def search_mouser(pn, qty):
 # NEWARK / FARNELL (element14 Product Search API)
 # ─────────────────────────────────────────────
 
-def search_farnell(pn, qty):
+def search_farnell(pn, qty, match_pn=None):
+    match_pn = match_pn or pn
     key = ENV.get("FARNELL_API_KEY")
     if not key:
         return []
@@ -455,7 +495,7 @@ def search_farnell(pn, qty):
     offers = []
     for p in products:
         mpn = (p.get("translatedManufacturerPartNumber") or "").strip()
-        if not mpn_matches(pn, mpn):
+        if not mpn_matches(match_pn, mpn):
             continue
         tiers = []
         for pb in p.get("prices", []) or []:
@@ -517,7 +557,8 @@ def _tme_get(url, access):
     return json.loads(fetch_bytes(req).decode())
 
 
-def search_tme(pn, qty):
+def search_tme(pn, qty, match_pn=None):
+    match_pn = match_pn or pn
     access = _tme_get_token()
     if not access:
         return []
@@ -534,7 +575,7 @@ def search_tme(pn, qty):
     matches = {}
     for p in elements:
         mpns = p.get("manufacturer_symbols") or []
-        if any(mpn_matches(pn, mpn) for mpn in mpns):
+        if any(mpn_matches(match_pn, mpn) for mpn in mpns):
             matches[p["symbol"]] = p
     if not matches:
         return []
@@ -565,7 +606,7 @@ def search_tme(pn, qty):
         stock = int(el.get("stock_quantity") or 0)
         moq = int(prod.get("minimal_amount") or 1)
         manu = ((prod.get("manufacturer") or {}).get("name")) or ""
-        matched_mpn = next((m for m in (prod.get("manufacturer_symbols") or []) if mpn_matches(pn, m)), pn)
+        matched_mpn = next((m for m in (prod.get("manufacturer_symbols") or []) if mpn_matches(match_pn, m)), pn)
         offers.append({
             "dist": "TME", "pn": sym, "mpn": matched_mpn, "stock": stock, "moq": moq,
             "lead": None, "tiers": tiers, "manu": manu,
@@ -577,12 +618,13 @@ def search_tme(pn, qty):
 # ВЫБОР ЛУЧШЕЙ ЦЕНЫ
 # ─────────────────────────────────────────────
 
-def _collect_offers(query, qty, manufacturer):
-    """Опрашивает все API одним запросом и фильтрует по производителю."""
+def _collect_offers(query, qty, manufacturer, match_pn=None):
+    """Опрашивает все API одним запросом и фильтрует по производителю.
+    match_pn — исходный артикул (с маской x), против которого проверяются кандидаты."""
     query_offers = []
     for search_fn in (search_digikey, search_mouser, search_farnell, search_tme):
         try:
-            query_offers.extend(search_fn(query, qty))
+            query_offers.extend(search_fn(query, qty, match_pn=match_pn))
         except Exception as e:
             print(f"    {search_fn.__name__} ошибка: {e}")
     return [o for o in query_offers if manufacturer_matches(manufacturer, o.get("manu", ""))]
@@ -592,7 +634,7 @@ def find_best_price(pn, qty, manufacturer=""):
     print(f"    qty={qty}")
     offers = []
     for query in part_search_variants(pn):
-        offers = _collect_offers(query, qty, manufacturer)
+        offers = _collect_offers(query, qty, manufacturer, match_pn=pn)
         if offers:
             break
 
@@ -625,6 +667,7 @@ def find_best_price(pn, qty, manufacturer=""):
         lead = None if in_stock else o.get("lead")
         cand = {
             "pn": pn, "distr_pn": o.get("pn", ""),
+            "resolved_mpn": o.get("mpn", ""),
             "manufacturer": o.get("manu", ""),
             "distributor": o.get("dist", ""), "moq": o.get("moq", 1),
             "stock": stock, "lead": lead,
@@ -963,8 +1006,14 @@ def write_results(results, output_path, rate_rub):
         if r.get("status") == "FOUND":
             base = F_R1 if found_idx % 2 == 0 else F_R2
             found_idx += 1
+            # Колонка B: найденный конкретный артикул производителя, когда он
+            # отличается от запрошенного (маска x, суффикс упаковки, написание).
+            resolved = r.get("resolved_mpn") or ""
             dist_pn = r.get("distr_pn") or ""
-            b_val = dist_pn if packaging_only_suffix(pn, dist_pn) else ""
+            if resolved and canonical_mpn(resolved) != canonical_mpn(pn):
+                b_val = resolved
+            else:
+                b_val = dist_pn if packaging_only_suffix(pn, dist_pn) else ""
             lead = r.get("lead")
             stock_v = r.get("stock", 0)
             if r.get("in_stock") and not lead:
