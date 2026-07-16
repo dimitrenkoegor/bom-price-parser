@@ -160,7 +160,9 @@ def run_parser(source: Path, job_dir: Path) -> tuple[Path | None, str]:
         sys.executable, str(PARSER), "--input", str(source), "--output", str(output),
         "--preview-path", str(job_dir / f"preview_{stem}.xlsx"), "--yes",
     ]
-    completed = subprocess.run(command, cwd=SCRIPT_DIR, text=True,
+    import os
+    child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}  # иначе stdout в cp1251 и итог не парсится
+    completed = subprocess.run(command, cwd=SCRIPT_DIR, text=True, env=child_env,
                                capture_output=True, timeout=1800, encoding="utf-8", errors="replace")
     (job_dir / f"parser_{stem}.log").write_text(
         (completed.stdout or "") + "\n" + (completed.stderr or ""), encoding="utf-8")
