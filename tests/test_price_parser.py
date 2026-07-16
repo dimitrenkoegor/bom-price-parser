@@ -61,6 +61,28 @@ class SearchValidationTests(unittest.TestCase):
         self.assertTrue(parser.mpn_matches("Q 10,240-SS3", "Q10.240-SS3"))
         self.assertFalse(parser.mpn_matches("Q 10,240-SS3", "Q10.241-SS3"))
 
+    def test_trailing_masks_per_regulament(self):
+        # строчный x, смешанный Xx и заглавные XX — маска «любой суффикс»
+        self.assertTrue(parser.mpn_matches("3313J-1-104x", "3313J-1-104E"))
+        self.assertTrue(parser.mpn_matches("DLC70B8R2CW501Xx", "DLC70B8R2CW501XT"))
+        self.assertTrue(parser.mpn_matches("DLC70B8R2CW501XX", "DLC70B8R2CW501XK"))
+        # одиночная заглавная X — литерал, не маска: произвольный (неупаковочный)
+        # суффикс не принимается; T принялся бы по правилу упаковки — это норм
+        self.assertFalse(parser.mpn_matches("EXB28V220JX", "EXB28V220JXDR"))
+        self.assertTrue(parser.mpn_matches("EXB28V220JX", "EXB-28V220JX"))
+
+    def test_midstring_x_wildcard(self):
+        self.assertTrue(parser.mpn_matches("TPSE477K010x0200", "TPSE477K010R0200"))
+        self.assertFalse(parser.mpn_matches("TPSE477K010x0200", "TPSE477K0100200"))
+        self.assertFalse(parser.mpn_matches("TPSE477K010x0200", "TPSE477K010RR0200"))
+
+    def test_packaging_tail_and_series_prefix(self):
+        self.assertTrue(parser.mpn_matches("CR0805-JW-390E", "CR0805-JW-390ELF"))
+        self.assertTrue(parser.mpn_matches("0805-FX-1503", "CR0805-FX-1503ELF"))
+        self.assertFalse(parser.mpn_matches("LM358", "LM358DR"))
+        self.assertFalse(parser.mpn_matches("LM358", "PLM358"))
+        self.assertFalse(parser.mpn_matches("104", "CR104"))
+
     def test_manufacturer_aliases_cover_merged_brands(self):
         self.assertTrue(parser.manufacturer_matches("Epcos", "TDK Electronics / EPCOS"))
         self.assertTrue(parser.manufacturer_matches("Avago Technologies", "Broadcom Limited"))

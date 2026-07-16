@@ -184,6 +184,48 @@ def rfq_parts_from_workbook(path: Path) -> list[str]:
     return parts
 
 
+def sanity_check_workbook(path: Path) -> str:
+    """Проверка результата перед автоотправкой. Возвращает '' если всё в порядке,
+    иначе описание проблемы (письмо клиенту в этом случае НЕ уходит)."""
+    import openpyxl
+
+    try:
+        worksheet = openpyxl.load_workbook(path, data_only=True).active
+    except Exception as exc:
+        return f"файл результата не читается: {exc}"
+    rows = found = 0
+    for row in worksheet.iter_rows(min_row=2, values_only=True):
+        if not row or not row[0] or len(row) < 10 or not row[2]:
+            continue
+        rows += 1
+        if row[4]:  # найденная позиция: цена обязана быть числом > 0
+            found += 1
+            price = row[8]
+            if not isinstance(price, (int, float)) or price <= 0:
+                return f"позиция {row[0]}: некорректная цена {price!r}"
+    if rows == 0:
+        return "в результате нет ни одной позиции"
+    return ""
+
+
+def notify_self(subject: str, text: str) -> None:
+    """Служебное письмо на собственный ящик при сбое (не клиенту)."""
+    try:
+        user = ENV["MAIL_USER"]
+        message = EmailMessage()
+        message["From"] = f"BOM Price Monitor <{user}>"
+        message["To"] = user
+        message["Subject"] = f"[MONITOR] {subject}"
+        message.set_content(text)
+        host = ENV.get("MAIL_SMTP_HOST", "smtp.mail.ru")
+        port = int(ENV.get("MAIL_SMTP_PORT", "465"))
+        with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context()) as smtp:
+            smtp.login(user, ENV["MAIL_PASSWORD"])
+            smtp.send_message(message)
+    except Exception as exc:
+        log(f"notify_self не удалось: {exc}")
+
+
 def claude_advisory(job_dir: Path, rfq_parts: list[str]) -> None:
     """Необязательный советник: headless Claude пишет JSON-подсказки по RFQ."""
     if not env_bool("ENABLE_CLAUDE_FALLBACK"):
@@ -267,11 +309,16 @@ def intake_once(dry_run: bool = False) -> None:
             log(f"Письмо от {sender}: '{subject[:80]}' — вложений: {len(attachments)}")
             results: list[Path] = []
             summaries: list[str] = []
+            problems: list[str] = []
             rfq_total = 0
             for attachment in attachments:
                 output, summary = run_parser(attachment, job_dir)
                 summaries.append(summary)
                 if output:
+                    issue = sanity_check_workbook(output)
+                    if issue:
+                        problems.append(f"{attachment.name}: {issue}")
+                        continue                       # файл с проблемой клиенту не уходит
                     results.append(output)
                     try:
                         rfq_parts = rfq_parts_from_workbook(output)
@@ -281,17 +328,28 @@ def intake_once(dry_run: bool = False) -> None:
                         rfq_total += len(rfq_parts)
                         with open(job_dir / "rfq_list.txt", "a", encoding="utf-8") as handle:
                             handle.write(f"# {attachment.name}\n" + "\n".join(rfq_parts) + "\n")
+                else:
+                    problems.append(summary)
             if not attachments:
                 summaries.append("Не найдено вложение Excel/TXT — пришлите BOM файлом.")
             if rfq_total:
                 claude_advisory(job_dir, (job_dir / "rfq_list.txt").read_text(encoding="utf-8").splitlines())
 
+            if problems:
+                log(f"САНИТИ-ПРОБЛЕМЫ (не отправлено клиенту): {'; '.join(problems)}")
+                notify_self("сбой обработки задания",
+                            f"Письмо от {sender}: '{subject}'\nПапка: {job_dir}\n\nПроблемы:\n- "
+                            + "\n- ".join(problems))
+
             send_enabled = env_bool("SEND_ENABLED", True) and not dry_run
-            if send_enabled and (results or not attachments):
+            if send_enabled and results:
                 send_reply(message, sender, results, summaries, rfq_total)
                 log(f"Ответ отправлен -> {sender}: {'; '.join(summaries)}")
+            elif send_enabled and not attachments:
+                send_reply(message, sender, [], summaries, 0)
+                log(f"Ответ (нет вложений) -> {sender}")
             else:
-                log(f"[dry-run/off] Ответ НЕ отправлен. Итог: {'; '.join(summaries)}. Файлы: {job_dir}")
+                log(f"[dry-run/off/сбой] Ответ НЕ отправлен. Итог: {'; '.join(summaries)}. Файлы: {job_dir}")
 
             processed.add(fingerprint)
             inspected.add(fingerprint)

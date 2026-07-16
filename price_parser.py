@@ -220,26 +220,63 @@ def canonical_mpn_loose(value):
 
 
 # Суффиксы, меняющие только упаковку/исполнение поставки, не характеристики
-# (регламент: T/tape&reel, K/bulk, L и LF/RoHS, CT/cut tape, TR)
-PACKAGING_TAILS = {"LF", "L", "T", "TR", "CT", "K"}
+# (регламент: T/tape&reel, K/bulk, L и LF/RoHS, CT/cut tape, TR; ELF/GLF — Bourns tape&reel lead-free)
+PACKAGING_TAILS = {"LF", "L", "T", "TR", "CT", "K", "ELF", "GLF"}
 
 
 def split_mask(requested):
-    """Маска регламента: строчные 'x' в конце артикула = «любой суффикс подходит»
-    (3313J-1-104x -> 3313J-1-104E). Заглавная X считается частью реального PN
-    (EXB28V220JX). Возвращает (база без маски, был_ли_x)."""
+    """Маска регламента «x / X / XX в конце — любой суффикс подходит»:
+    - строчный x (или кириллич. х), один и более — маска (3313J-1-104x)
+    - хвост из двух и более заглавных X — маска (DLC...CXX)
+    - смешанный хвост (Xx) — маска (DLC70B8R2CW501Xx)
+    - одиночная заглавная X — часть реального PN (EXB28V220JX)
+    База короче 3 значимых символов маской не считается (защита от абсурда).
+    Возвращает (база без маски, был_ли_x)."""
     raw = str(requested or "").strip()
-    m = re.search(r"[xх]+$", raw)  # только строчные латинская x / кириллическая х
+    m = re.search(r"[xхXХ]+$", raw)
     if m and m.start() > 0:
-        return raw[:m.start()].rstrip("-. "), True
+        tail = m.group(0)
+        has_lower = any(ch in "xх" for ch in tail)
+        uppers = sum(1 for ch in tail if ch in "XХ")
+        if has_lower or uppers >= 2:
+            base = raw[:m.start()].rstrip("-. ")
+            if len(canonical_mpn_loose(base)) >= 3:
+                return base, True
     return raw, False
+
+
+def mask_regex(requested):
+    """Строчный x в СЕРЕДИНЕ артикула = «любой один символ»
+    (регламент: TPSE477K010x0200 -> TPSE477K010R0200).
+    Возвращает анкерованный regex по loose-форме или None, если внутренних x нет."""
+    base, masked_tail = split_mask(str(requested or "").strip())
+    core = base.translate(CYRILLIC_LOOKALIKES)
+    if "x" not in core:
+        return None
+    pattern = []
+    for ch in core:
+        if ch == "x":
+            pattern.append("[A-Z0-9]")
+        elif ch.upper().isalnum():
+            pattern.append(re.escape(ch.upper()))
+        # разделители опускаются — сравнение идёт с loose-формой кандидата
+    if not pattern:
+        return None
+    suffix = ".*" if masked_tail else ""
+    return re.compile("^" + "".join(pattern) + suffix + "$")
 
 
 def mpn_matches(requested, candidate):
     if not requested or not candidate:
         return False
-    base, masked = split_mask(requested)
     cand_loose = canonical_mpn_loose(candidate)
+    if not cand_loose:
+        return False
+    # x в середине — точечный wildcard
+    rx = mask_regex(requested)
+    if rx:
+        return bool(rx.match(cand_loose))
+    base, masked = split_mask(requested)
     if masked:
         base_loose = canonical_mpn_loose(base)
         return bool(base_loose) and cand_loose.startswith(base_loose)
@@ -253,6 +290,16 @@ def mpn_matches(requested, candidate):
     # Упаковочный суффикс у дистрибьютора: CR0805-JW-390E -> CR0805-JW-390ELF
     if cand_loose.startswith(loose) and cand_loose[len(loose):] in PACKAGING_TAILS:
         return True
+    # Достройка серии-префикса производителя: в запросе код серии без буквенного
+    # префикса (0805-FX-1503 -> Bourns CR0805-FX-1503ELF). Требования: запрошенный
+    # код достаточно длинный, префикс 1-2 буквы, хвост пуст или упаковочный.
+    # Производитель дополнительно проверяется в manufacturer_matches.
+    if len(loose) >= 6:
+        idx = cand_loose.find(loose)
+        if 0 < idx <= 2 and cand_loose[:idx].isalpha():
+            tail = cand_loose[idx + len(loose):]
+            if tail == "" or tail in PACKAGING_TAILS:
+                return True
     return False
 
 
@@ -409,27 +456,37 @@ def search_digikey(pn, qty, match_pn=None):
 # MOUSER  (Search API)
 # ─────────────────────────────────────────────
 
+def _mouser_parts(key, pn):
+    """Список Parts от Mouser: сначала точный поиск по партномеру,
+    при пустом результате — нечёткий keyword-поиск (кандидатов дальше
+    фильтрует mpn_matches, так что аналоги не проскочат)."""
+    attempts = (
+        ("partnumber", {"SearchByPartRequest": {"mouserPartNumber": pn, "partSearchOptions": ""}}),
+        ("keyword", {"SearchByKeywordRequest": {"keyword": pn, "records": 15, "startingRecord": 0}}),
+    )
+    for endpoint, body_obj in attempts:
+        url = f"https://api.mouser.com/api/v1.0/search/{endpoint}?apiKey=" + urllib.parse.quote(key)
+        req = urllib.request.Request(url, data=json.dumps(body_obj).encode(), method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            d = json.loads(fetch_bytes(req).decode())
+        except Exception as e:
+            print(f"    Mouser error: {e}")
+            continue
+        if d.get("Errors"):
+            continue
+        parts = (d.get("SearchResults") or {}).get("Parts") or []
+        if parts:
+            return parts
+    return []
+
+
 def search_mouser(pn, qty, match_pn=None):
     match_pn = match_pn or pn
     key = ENV.get("MOUSER_API_KEY")
     if not key:
         return []
-    url = "https://api.mouser.com/api/v1.0/search/partnumber?apiKey=" + urllib.parse.quote(key)
-    body = json.dumps({"SearchByPartRequest": {"mouserPartNumber": pn, "partSearchOptions": ""}}).encode()
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    try:
-        d = json.loads(fetch_bytes(req).decode())
-    except Exception as e:
-        print(f"    Mouser error: {e}")
-        return []
-
-    errors = d.get("Errors") or []
-    if errors:
-        # Тихо пропускаем — например "pending authorisation" пока не одобрен ключ
-        return []
-
-    results = (d.get("SearchResults") or {}).get("Parts") or []
+    results = _mouser_parts(key, pn)
     offers = []
     for p in results:
         mpn = (p.get("ManufacturerPartNumber") or "").strip()
@@ -474,24 +531,32 @@ def search_farnell(pn, qty, match_pn=None):
     key = ENV.get("FARNELL_API_KEY")
     if not key:
         return []
-    params = (
-        "term=manuPartNum%3A" + urllib.parse.quote(pn) +
-        "&storeInfo.id=www.newark.com"
-        "&resultsSettings.offset=0"
-        "&resultsSettings.numberOfResults=5"
-        "&resultsSettings.responseGroup=large"
-        "&callInfo.responseDataFormat=JSON"
-        "&callinfo.apiKey=" + key
-    )
-    url = "https://api.element14.com/catalog/products?" + params
-    req = urllib.request.Request(url)
-    try:
-        d = json.loads(fetch_bytes(req).decode())
-    except Exception as e:
-        print(f"    Newark/Farnell error: {e}")
+
+    def fetch_products(term_field, limit):
+        params = (
+            f"term={term_field}%3A" + urllib.parse.quote(pn) +
+            "&storeInfo.id=www.newark.com"
+            "&resultsSettings.offset=0"
+            f"&resultsSettings.numberOfResults={limit}"
+            "&resultsSettings.responseGroup=large"
+            "&callInfo.responseDataFormat=JSON"
+            "&callinfo.apiKey=" + key
+        )
+        req = urllib.request.Request("https://api.element14.com/catalog/products?" + params)
+        try:
+            d = json.loads(fetch_bytes(req).decode())
+        except Exception as e:
+            print(f"    Newark/Farnell error: {e}")
+            return []
+        # обёртка ответа зависит от типа term: manufacturerPartNumberSearchReturn / keywordSearchReturn
+        for value in (d or {}).values():
+            if isinstance(value, dict) and "products" in value:
+                return value.get("products") or []
         return []
 
-    products = (d.get("manufacturerPartNumberSearchReturn") or {}).get("products") or []
+    # Точный поиск по MPN; при пустом — нечёткий поиск по всем полям (any),
+    # кандидатов дальше фильтрует mpn_matches.
+    products = fetch_products("manuPartNum", 5) or fetch_products("any", 15)
     offers = []
     for p in products:
         mpn = (p.get("translatedManufacturerPartNumber") or "").strip()
@@ -563,7 +628,7 @@ def search_tme(pn, qty, match_pn=None):
     if not access:
         return []
 
-    # 1) ищем товар по MPN производителя
+    # 1) ищем товар по MPN производителя (точный справочник TME)
     try:
         d = _tme_get("https://api.tme.eu/products?" + urllib.parse.urlencode(
             [("country", "DE"), ("mpns[]", pn)]), access)
@@ -571,12 +636,28 @@ def search_tme(pn, qty, match_pn=None):
         print(f"    TME error: {e}")
         return []
 
-    elements = (d.get("data") or {}).get("elements") or []
-    matches = {}
-    for p in elements:
-        mpns = p.get("manufacturer_symbols") or []
-        if any(mpn_matches(match_pn, mpn) for mpn in mpns):
-            matches[p["symbol"]] = p
+    def collect_matches(products):
+        found = {}
+        for p in products:
+            symbols = [p.get("symbol") or ""] + list(p.get("manufacturer_symbols") or [])
+            if any(mpn_matches(match_pn, s) for s in symbols if s):
+                found[p["symbol"]] = p
+        return found
+
+    matches = collect_matches((d.get("data") or {}).get("elements") or [])
+
+    # 1б) нечёткий fallback: полнотекстовый поиск по фразе (кандидатов
+    # фильтрует тот же mpn_matches — аналоги не пройдут)
+    if not matches:
+        phrase = re.sub(r"\s+", " ", str(pn)).strip()[:40]
+        if len(phrase) >= 2:
+            try:
+                d = _tme_get("https://api.tme.eu/products/search?" + urllib.parse.urlencode(
+                    [("country", "DE"), ("phrase", phrase), ("scope[]", "products"), ("limit", "20")]), access)
+                products = ((d.get("data") or {}).get("products") or {}).get("elements") or []
+                matches = collect_matches(products)
+            except Exception:
+                pass
     if not matches:
         return []
 
@@ -638,16 +719,24 @@ def find_best_price(pn, qty, manufacturer=""):
         if offers:
             break
 
-    # Второй проход: если запрос отличался от настоящего MPN только расстановкой
-    # разделителей (DigiKey находит нечётко, Mouser/TME/Farnell — только по точному
-    # MPN), повторяем поиск точным MPN, чтобы подтянуть остальных дистрибьюторов
-    # (часто дешевле) и выбрать реальный минимум по регламенту.
+    # Второй проход: если запрос отличался от настоящего MPN (разделители, маска,
+    # суффикс) — повторяем поиск каждым найденным точным MPN (до 3 различных),
+    # чтобы подтянуть дистрибьюторов с точечным поиском (Mouser/TME/Farnell,
+    # часто дешевле) и выбрать реальный минимум по регламенту.
     if offers:
-        resolved = [o.get("mpn", "").strip() for o in offers if o.get("mpn")]
-        target = next((m for m in resolved if canonical_mpn(m) != canonical_mpn(pn)), "")
-        if target:
-            seen = {(o["dist"], o.get("pn", "")) for o in offers}
-            for extra in _collect_offers(target, qty, manufacturer):
+        seen = {(o["dist"], o.get("pn", "")) for o in offers}
+        tried = set()
+        for o in list(offers):
+            rmpn = (o.get("mpn") or "").strip()
+            if not rmpn or canonical_mpn(rmpn) == canonical_mpn(pn):
+                continue
+            key = canonical_mpn_loose(rmpn)
+            if key in tried:
+                continue
+            if len(tried) >= 3:
+                break
+            tried.add(key)
+            for extra in _collect_offers(rmpn, qty, manufacturer, match_pn=rmpn):
                 sig = (extra["dist"], extra.get("pn", ""))
                 if sig not in seen:
                     offers.append(extra)
@@ -655,7 +744,11 @@ def find_best_price(pn, qty, manufacturer=""):
 
     if not offers:
         return {"pn": pn, "qty": qty, "manufacturer": manufacturer, "status": "RFQ"}
+    return _best_candidate(offers, pn, qty)
 
+
+def _best_candidate(offers, pn, qty):
+    """Выбор лучшего предложения: приоритет — сток ≥ количества, затем мин. цена."""
     best = None
     for o in offers:
         tier, min_not_met = pick_tier(o["tiers"], qty)
@@ -678,6 +771,122 @@ def find_best_price(pn, qty, manufacturer=""):
         if best is None or key < best[0]:
             best = (key, cand)
     return best[1]
+
+
+# ─────────────────────────────────────────────
+# OEMSECRETS Part Search API — добивочный фолбэк (квота, по умолч. 10/день)
+# ─────────────────────────────────────────────
+
+QUOTA_PATH = SCRIPT_DIR / "oemsecrets-quota.json"
+
+# Авторизованные дистрибьюторы регламента для фильтрации выдачи oemsecrets
+# (маркетплейсы крупных дистрибьюторов допустимы: Verical = Arrow)
+OEMSECRETS_AUTHORIZED = (
+    "digikey", "digi-key", "mouser", "tme", "farnell", "newark", "element14",
+    "arrow", "verical", "tti", "avnet", "rs comp", "rs-online", "rs de",
+    "rs americas", "future", "heilind", "rutronik", "buerklin", "bürklin",
+)
+
+
+def _oemsecrets_quota_take():
+    """True, если дневная квота позволяет ещё один запрос (и списывает его)."""
+    import datetime as _dt
+    limit = int(ENV.get("OEMSECRETS_DAILY_LIMIT", "10"))
+    today = _dt.date.today().isoformat()
+    try:
+        state = json.loads(QUOTA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if state.get("date") != today:
+        state = {"date": today, "used": 0}
+    if state["used"] >= limit:
+        return False
+    state["used"] += 1
+    QUOTA_PATH.write_text(json.dumps(state), encoding="utf-8")
+    return True
+
+
+def search_oemsecrets(pn, qty, match_pn=None):
+    """Один запрос к oemsecrets Part Search API (140+ дистрибьюторов).
+    Вызывается только для RFQ-остатка и только в пределах дневной квоты.
+    В ответе может не быть поля производителя — тогда принимаем только
+    строгое совпадение MPN (без масок/достроек)."""
+    match_pn = match_pn or pn
+    key = ENV.get("OEMSECRETS_API_KEY")
+    if not key:
+        return []
+    url = "https://oemsecretsapi.com/partsearch?" + urllib.parse.urlencode(
+        [("apiKey", key), ("searchTerm", pn), ("currency", "USD"), ("countryCode", "US")])
+    try:
+        d = json.loads(fetch_bytes(urllib.request.Request(url), timeout=25).decode())
+    except Exception as e:
+        print(f"    oemsecrets error: {e}")
+        return []
+
+    offers = []
+    for item in d.get("stock") or []:
+        dist_info = item.get("distributor") or {}
+        dist_name = (dist_info.get("distributor_common_name")
+                     or dist_info.get("distributor_name") or "").strip()
+        if not any(a in dist_name.lower() for a in OEMSECRETS_AUTHORIZED):
+            continue                                     # брокеры/маркетплейсы — мимо
+        mpn = (item.get("part_number") or "").strip()
+        manu = (item.get("manufacturer") or item.get("manufacturer_name") or "").strip()
+        if manu:
+            if not mpn_matches(match_pn, mpn):
+                continue
+        else:
+            # производитель неизвестен — только строгое совпадение записи MPN
+            if canonical_mpn(match_pn) != canonical_mpn(mpn):
+                continue
+        tiers = []
+        for pb in (item.get("prices") or {}).get("USD") or []:
+            try:
+                tiers.append({"qty": int(float(pb.get("unit_break") or 1)),
+                              "price": float(pb.get("unit_price"))})
+            except (TypeError, ValueError):
+                continue
+        if not tiers:
+            continue
+        stock = int(item.get("quantity_in_stock") or 0)
+        lead_digits = re.sub(r"[^\d]", "", str(item.get("lead_time") or ""))
+        lead = int(lead_digits) if lead_digits else None
+        offers.append({
+            "dist": dist_name, "pn": item.get("source_part_number") or mpn, "mpn": mpn,
+            "stock": stock, "moq": min(t["qty"] for t in tiers),
+            "lead": lead, "tiers": tiers, "manu": manu,
+        })
+    return offers
+
+
+def oemsecrets_pass(results):
+    """Добивочный проход по RFQ-остатку через oemsecrets (в пределах квоты).
+    Позиции с бо́льшим количеством — первыми (важнее для закупки)."""
+    if not ENV.get("OEMSECRETS_API_KEY"):
+        return
+    rfq_indexes = [i for i, r in enumerate(results)
+                   if r.get("status") == "RFQ" and r.get("pn")]
+    rfq_indexes.sort(key=lambda i: results[i].get("qty", 0), reverse=True)
+    recovered = 0
+    for i in rfq_indexes:
+        if not _oemsecrets_quota_take():
+            print("    oemsecrets: дневная квота исчерпана — остаток завтра")
+            break
+        r = results[i]
+        offers = [o for o in search_oemsecrets(r["pn"], r.get("qty", 1))
+                  if manufacturer_matches(r.get("manufacturer", ""), o.get("manu", ""))
+                  or not o.get("manu")]
+        if not offers:
+            continue
+        cand = _best_candidate(offers, r["pn"], r.get("qty", 1))
+        cand["description"] = r.get("description", r["pn"])
+        if not cand.get("manufacturer"):
+            cand["manufacturer"] = r.get("manufacturer", "")
+        results[i] = cand
+        recovered += 1
+        print(f"    oemsecrets: {r['pn']} -> {cand['distributor']} ${cand['price_usd']}")
+    if recovered:
+        print(f"oemsecrets-фолбэк добрал позиций: {recovered}")
 
 
 # ─────────────────────────────────────────────
@@ -1213,6 +1422,12 @@ def main():
         else:
             print("    -> RFQ")
         results.append(r)
+
+    # Добивочный проход по RFQ-остатку через oemsecrets (лимитированная квота)
+    try:
+        oemsecrets_pass(results)
+    except Exception as e:
+        print(f"oemsecrets-фолбэк пропущен: {e}")
 
     write_results(results, out_path, rate_rub)
 
