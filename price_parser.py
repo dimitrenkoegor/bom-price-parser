@@ -930,20 +930,18 @@ def search_oemsecrets(pn, qty, match_pn=None):
 # LLM-КОНТУР: подсказка артикула + ОБЯЗАТЕЛЬНАЯ проверка через API
 # ─────────────────────────────────────────────
 
-CLAUDE_PROMPT = """Ты помогаешь закупщику электронных компонентов идентифицировать
-артикулы, которые не нашлись в каталогах дистрибьюторов.
+CLAUDE_SYSTEM = (
+    "Ты — детерминированный резолвер артикулов ЭКБ. Отвечай ТОЛЬКО валидным "
+    "JSON-массивом в одну выдачу, без приветствий, пояснений и markdown. "
+    "Никогда не задавай уточняющих вопросов. Идентифицируй ТОТ ЖЕ компонент, "
+    "не аналог: другой номинал/напряжение/корпус/точность запрещены. Разрешено "
+    "исправить опечатку, дописать префикс/суффикс серии, указать актуальный "
+    "бренд после поглощений, развернуть неполный артикул. Цены/склад/сроки не "
+    "придумывай. Не уверен — suggested_mpn=null."
+)
 
-ЖЁСТКИЕ ПРАВИЛА:
-1. Ты определяешь ТОТ ЖЕ САМЫЙ компонент, а не аналог и не замену. Другой номинал,
-   напряжение, корпус, точность — ЗАПРЕЩЕНЫ.
-2. Разрешено: исправить опечатку, дописать недостающий префикс/суффикс серии,
-   указать актуальное имя производителя (после поглощений), развернуть неполную
-   запись артикула.
-3. НЕ придумывай цены, склады и сроки — только артикул и производителя.
-4. Если не уверен — верни null в suggested_mpn. Лучше ничего, чем неверная деталь.
-
-Верни СТРОГО JSON-массив без пояснений, по объекту на позицию:
-[{"requested_pn":"...","suggested_mpn":"..."|null,"suggested_manufacturer":"..."|null,"reason":"кратко"}]
+CLAUDE_PROMPT = """Для каждой позиции верни объект. Формат ответа — только этот JSON-массив:
+[{"requested_pn":"<как в запросе>","suggested_mpn":"<полный артикул>"|null,"suggested_manufacturer":"<бренд>"|null,"reason":"<кратко>"}]
 
 Позиции:
 """
@@ -970,11 +968,18 @@ def claude_suggest(items, timeout=180):
     payload = [{"requested_pn": it["pn"], "manufacturer": it.get("manufacturer", ""),
                 "description": it.get("description", "")[:120]} for it in items]
     prompt = CLAUDE_PROMPT + json.dumps(payload, ensure_ascii=False, indent=1)
+    # Запускаем в отдельной пустой папке, чтобы CLI не подхватывал AGENTS.md/
+    # CLAUDE.md проекта и не «уходил в диалог»; системным промптом форсим JSON.
+    import tempfile
     try:
-        completed = subprocess.run(
-            [binary, "-p", prompt, "--output-format", "json"],
-            capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace")
+        with tempfile.TemporaryDirectory() as workdir:
+            # Промпт — через stdin: на Windows .cmd-обёртка ломает кавычки/скобки
+            # JSON, если передавать его как аргумент командной строки.
+            completed = subprocess.run(
+                [binary, "-p", "--output-format", "json",
+                 "--append-system-prompt", CLAUDE_SYSTEM],
+                input=prompt, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace", cwd=workdir)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"    LLM-контур недоступен: {exc}")
         return []
