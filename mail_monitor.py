@@ -152,6 +152,22 @@ def save_attachments(message: Message, destination: Path) -> list[Path]:
     return saved
 
 
+def parse_failure_reason(stdout: str, total: int) -> str:
+    """Признак структурного сбоя разбора, а не честного RFQ: ни одной позиции
+    не найдено И большинство отвергнуто из-за неразобранного производителя.
+    В этом случае письмо клиенту не отправляется — сначала смотрит человек."""
+    if not total:
+        return ""
+    match = re.search(r"Найдено:\s*(\d+)\s*\|\s*RFQ:\s*(\d+)", stdout or "")
+    if not match or int(match.group(1)) > 0:
+        return ""
+    no_mfr = len(re.findall(r"RFQ:\s*производитель не указан", stdout or ""))
+    if no_mfr and no_mfr >= total * 0.6:
+        return (f"0 из {total} найдено, у {no_mfr} позиций не разобран производитель — "
+                f"похоже на сбой распознавания колонок, а не реальный RFQ")
+    return ""
+
+
 def run_parser(source: Path, job_dir: Path) -> tuple[Path | None, str]:
     """Возвращает (готовый файл | None, строка-итог для письма)."""
     stem = re.sub(r"[^A-Za-zА-Яа-яЁё0-9_-]", "_", source.stem)[:60]
@@ -169,6 +185,11 @@ def run_parser(source: Path, job_dir: Path) -> tuple[Path | None, str]:
     if completed.returncode or not output.exists():
         return None, f"{source.name}: ошибка обработки (см. лог на сервере)"
     match = re.search(r"Найдено:\s*(\d+)\s*\|\s*RFQ:\s*(\d+)", completed.stdout or "")
+    if match:
+        total = int(match.group(1)) + int(match.group(2))
+        broken = parse_failure_reason(completed.stdout or "", total)
+        if broken:
+            return None, f"{source.name}: {broken}"
     summary = f"{source.name}: найдено {match.group(1)}, RFQ {match.group(2)}" if match else f"{source.name}: обработан"
     return output, summary
 

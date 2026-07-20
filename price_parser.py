@@ -76,14 +76,37 @@ RU_TYPE_WORDS = [
     "вилка", "розетка", "переключатель", "кварц", "резонатор", "предохранитель",
     "генератор", "кнопка", "термистор", "оптопара", "оптореле", "датчик",
 ]
-# Известные производители — отбрасываем из хвоста наименования (и пишем в Manufacturer)
+# Известные производители — отбрасываем из хвоста наименования (и пишем в Manufacturer).
+# Список нужен, когда колонка «Производитель» в запросе пустая, а бренд указан
+# в конце описания («Микросхема LM8272MM/NOPB Texas Instruments»).
 KNOWN_MFR = [
+    # пассивы, разъёмы, кварцы
     "Traco Power", "TracoPower", "Traco", "Murata", "Vishay", "TDK", "Bourns",
     "Panasonic", "Rohm", "Littelfuse", "Yageo", "Kemet", "AVX", "Nichicon",
     "Wurth", "Würth", "TE Connectivity", "Molex", "Samsung", "Kyocera",
     "Knowles", "Voltronics", "Dalicap", "Hitano", "Jamicon", "Epcos", "Jauch",
     "Epson", "Golledge", "Avago Technologies", "Broadcom", "Axicom", "Cosmo",
-    "Susumu", "Meggitt Electronics", "Fujitsu", "Switronic",
+    "Susumu", "Meggitt Electronics", "Fujitsu", "Switronic", "Amphenol",
+    "Harting", "JST", "Hirose", "Samtec", "Adam Tech", "ADAM TECH", "Phoenix Contact",
+    "Weidmuller", "Wago", "Abracon", "Raltron", "IQD", "NDK", "Taiyo Yuden",
+    "Coilcraft", "Pulse Electronics", "Laird", "Chilisin", "Sunlord", "Walsin",
+    "Johanson", "Skyworks", "Qorvo", "Mini-Circuits", "Delta Electronics",
+    "Mean Well", "Recom", "XP Power", "Cui", "CUI", "Aimtec",
+    # полупроводники (главный пробел, из-за которого запрос 282 ушёл в RFQ)
+    "Texas Instruments", "Analog Devices", "Linear Technology", "Maxim Integrated",
+    "Maxim", "International Rectifier", "Infineon Technologies", "Infineon",
+    "STMicroelectronics", "ST Microelectronics", "NXP Semiconductors", "NXP",
+    "ON Semiconductor", "onsemi", "Microchip Technology", "Microchip", "Atmel",
+    "Nexperia", "Diodes Incorporated", "Diodes Inc", "Renesas Electronics",
+    "Renesas", "Intersil", "Cypress Semiconductor", "Cypress", "Spansion",
+    "Toshiba", "Nuvoton", "Winbond", "Micron Technology", "Micron", "Alliance Memory",
+    "ISSI", "Lattice Semiconductor", "Lattice", "AMD", "Xilinx", "Altera", "Intel",
+    "Marvell", "Mitel", "Microsemi", "Semtech", "Power Integrations", "Vicor",
+    "Monolithic Power Systems", "MPS", "Silicon Labs", "Silicon Laboratories",
+    "Melexis", "Allegro MicroSystems", "Allegro", "Bosch Sensortec", "Sensirion",
+    "Honeywell", "Omron", "Panasonic Industrial", "Littelfuse Semiconductor",
+    "Central Semiconductor", "Comchip", "Taiwan Semiconductor", "MCC",
+    "Micro Commercial", "Wolfspeed", "Cree", "IXYS", "Sanken", "Rohm Semiconductor",
 ]
 
 CYRILLIC_LOOKALIKES = str.maketrans({
@@ -109,6 +132,32 @@ MANUFACTURER_ALIASES = {
     "fujitsu": "fujitsufcl",
     "fcl": "fujitsufcl",
     "fclcomponents": "fujitsufcl",
+}
+
+# Поглощения: бренд в запросе и бренд у дистрибьютора — одна и та же деталь.
+# Ключ — canonical_manufacturer() запрошенного, значение — итоговый канон.
+ACQUISITION_ALIASES = {
+    # Infineon: International Rectifier (2015), Cypress (2020)
+    ("internationalrectifier", "ir", "irf", "infineon", "infineontechnologies",
+     "cypress", "cypresssemiconductor", "spansion"): "infineon",
+    # Analog Devices: Linear Technology (2017), Maxim Integrated (2021)
+    ("analogdevices", "analogdevicesinc", "lineartechnology", "lineartech", "ltc",
+     "maxim", "maximintegrated", "maximintegratedproducts"): "analogdevices",
+    # Renesas: Intersil (2017), IDT (2019)
+    ("renesas", "renesaselectronics", "intersil", "idt",
+     "integrateddevicetechnology"): "renesas",
+    # Microchip: Atmel (2016), Microsemi (2018), Micrel
+    ("microchip", "microchiptechnology", "atmel", "microsemi", "micrel",
+     "mitel"): "microchip",
+    # NXP: Freescale (2015)
+    ("nxp", "nxpsemiconductors", "freescale", "freescalesemiconductor"): "nxp",
+    # onsemi: Fairchild (2016)
+    ("onsemiconductor", "onsemi", "on", "fairchild",
+     "fairchildsemiconductor"): "onsemi",
+    # AMD: Xilinx (2022)
+    ("amd", "xilinx", "amdxilinx"): "amdxilinx",
+    # Skyworks: Silicon Labs infrastructure (2021)
+    ("skyworks", "skyworkssolutions", "siliconlabs", "siliconlaboratories"): "skyworks",
 }
 
 
@@ -221,7 +270,12 @@ def canonical_mpn_loose(value):
 
 # Суффиксы, меняющие только упаковку/исполнение поставки, не характеристики
 # (регламент: T/tape&reel, K/bulk, L и LF/RoHS, CT/cut tape, TR; ELF/GLF — Bourns tape&reel lead-free)
-PACKAGING_TAILS = {"LF", "L", "T", "TR", "CT", "K", "ELF", "GLF"}
+PACKAGING_TAILS = {
+    "LF", "L", "T", "TR", "CT", "K", "ELF", "GLF",
+    # Бессвинцовое исполнение / лента (Analog Devices, Infineon и др.):
+    # LT1763CS8 -> LT1763CS8#PBF / LT1763CS8#TRPBF — характеристики те же
+    "PBF", "TRPBF", "TRLPBF", "TRPBFT", "G", "GT", "RL", "R7", "E4",
+}
 
 
 def split_mask(requested):
@@ -313,6 +367,13 @@ def canonical_manufacturer(value):
         return "tdkepcos"
     if "fujitsu" in key or key.startswith("fcl"):
         return "fujitsufcl"
+    # Поглощения: приводим и запрос, и ответ дистрибьютора к общему канону
+    for names, canon in ACQUISITION_ALIASES.items():
+        if key in names:
+            return canon
+    for names, canon in ACQUISITION_ALIASES.items():
+        if any(len(n) >= 5 and n in key for n in names):
+            return canon
     return MANUFACTURER_ALIASES.get(key, key)
 
 
@@ -897,8 +958,42 @@ def clean_spaces(value):
     return re.sub(r"\s+", " ", str(value or "").replace("\u00a0", " ")).strip()
 
 
+def _looks_like_brand_token(token):
+    """Токен похож на часть названия бренда: есть подряд ≥2 латинских буквы,
+    букв больше чем цифр, нет процентов/единиц измерения. Пропускает '3Peak',
+    'Rectifier', 'Instruments'; отсекает '100nF', '0805', '±5%'."""
+    t = str(token or "").strip("()[],;")
+    if not t or "%" in t or "±" in t:
+        return False
+    if not re.search(r"[A-Za-z]{2,}", t):
+        return False
+    letters = sum(ch.isalpha() and ch.isascii() for ch in t)
+    digits = sum(ch.isdigit() for ch in t)
+    if digits >= letters:
+        return False
+    # единицы измерения и типоразмеры не бренд
+    if re.fullmatch(r"\d+(?:[.,]\d+)?\s*(?:[munpkKMG]?[FHΩVWAf]|nF|uF|pF|mH|uH|kHz|MHz|GHz|ppm|SMD|DIP|SOT\d*|SOIC\d*)",
+                    t, re.I):
+        return False
+    return True
+
+
+def _looks_like_mpn_token(token):
+    """Токен похож на артикул: латиница и либо ≥2 цифр, либо разделитель (-/#.)
+    рядом с цифрой. Так 'TPW4051-SR' и 'LT1763CS8' — артикулы, а '3Peak' — бренд."""
+    t = str(token or "").strip("()[],;")
+    if len(t) < 4 or not re.search(r"[A-Za-z]", t):
+        return False
+    digits = sum(ch.isdigit() for ch in t)
+    if digits >= 2:
+        return True
+    return bool(digits and re.search(r"[-/#.]", t))
+
+
 def split_manufacturer(desc, manufacturer_hint=""):
-    """Возвращает (описание без бренда, бренд), используя колонку бренда как приоритет."""
+    """Возвращает (описание без бренда, бренд), используя колонку бренда как приоритет.
+    Сначала ищет бренд по списку KNOWN_MFR, затем — общим правилом: замыкающие
+    словоподобные токены после артикула (покрывает бренды вне списка, напр. '3Peak')."""
     text = clean_spaces(desc)
     candidates = []
     if manufacturer_hint:
@@ -913,7 +1008,28 @@ def split_manufacturer(desc, manufacturer_hint=""):
         match = re.search(r"(?:\s*[,;\-]\s*|\s+)" + re.escape(mfr) + r"\s*$", text, re.I)
         if match:
             return text[:match.start()].strip(" -,;"), clean_spaces(manufacturer_hint) or mfr
-    return text, clean_spaces(manufacturer_hint) or None
+
+    if manufacturer_hint:
+        return text, clean_spaces(manufacturer_hint)
+
+    # Общее правило: до 3 замыкающих «словесных» токенов считаются брендом,
+    # но только если ПЕРЕД ними остаётся токен, похожий на артикул
+    # ("Микросхема TPW4051-SR 3Peak" -> бренд '3Peak';
+    #  "Микросхема LT1763CS8" -> бренда нет, артикул не съедаем).
+    tokens = text.split()
+    tail = 0
+    while tail < 3 and len(tokens) - tail - 1 >= 0:
+        token = tokens[-1 - tail]
+        # артикул брендом не считаем — иначе съедим сам MPN (TPW4051-SR)
+        if _looks_like_mpn_token(token) or not _looks_like_brand_token(token):
+            break
+        tail += 1
+    if tail:
+        head = tokens[:len(tokens) - tail]
+        if any(_looks_like_mpn_token(t) for t in head):
+            brand = " ".join(tokens[len(tokens) - tail:]).strip(" -,;")
+            return " ".join(head).strip(" -,;"), brand
+    return text, None
 
 
 def strip_product_type(text):
