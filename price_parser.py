@@ -41,6 +41,7 @@
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -180,6 +181,11 @@ def load_env(path=ENV_PATH):
 
 
 ENV = load_env()
+
+
+def env_flag(name, default=False):
+    """Булев флаг из .env (true/1/yes/on)."""
+    return ENV.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def fetch_bytes(req, timeout=15, attempts=2):
@@ -920,6 +926,130 @@ def search_oemsecrets(pn, qty, match_pn=None):
     return offers
 
 
+# ─────────────────────────────────────────────
+# LLM-КОНТУР: подсказка артикула + ОБЯЗАТЕЛЬНАЯ проверка через API
+# ─────────────────────────────────────────────
+
+CLAUDE_PROMPT = """Ты помогаешь закупщику электронных компонентов идентифицировать
+артикулы, которые не нашлись в каталогах дистрибьюторов.
+
+ЖЁСТКИЕ ПРАВИЛА:
+1. Ты определяешь ТОТ ЖЕ САМЫЙ компонент, а не аналог и не замену. Другой номинал,
+   напряжение, корпус, точность — ЗАПРЕЩЕНЫ.
+2. Разрешено: исправить опечатку, дописать недостающий префикс/суффикс серии,
+   указать актуальное имя производителя (после поглощений), развернуть неполную
+   запись артикула.
+3. НЕ придумывай цены, склады и сроки — только артикул и производителя.
+4. Если не уверен — верни null в suggested_mpn. Лучше ничего, чем неверная деталь.
+
+Верни СТРОГО JSON-массив без пояснений, по объекту на позицию:
+[{"requested_pn":"...","suggested_mpn":"..."|null,"suggested_manufacturer":"..."|null,"reason":"кратко"}]
+
+Позиции:
+"""
+
+
+def _claude_binary():
+    """Путь к CLI. На Windows npm ставит обёртку claude.cmd, которую
+    subprocess без расширения не находит."""
+    configured = ENV.get("CLAUDE_BIN")
+    if configured:
+        return configured
+    import shutil
+    for name in ("claude.cmd", "claude.exe", "claude"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return "claude"
+
+
+def claude_suggest(items, timeout=180):
+    """Спрашивает headless-Claude про нерешённые позиции.
+    Возвращает список подсказок (может быть пустым). Цены НЕ запрашиваются."""
+    binary = _claude_binary()
+    payload = [{"requested_pn": it["pn"], "manufacturer": it.get("manufacturer", ""),
+                "description": it.get("description", "")[:120]} for it in items]
+    prompt = CLAUDE_PROMPT + json.dumps(payload, ensure_ascii=False, indent=1)
+    try:
+        completed = subprocess.run(
+            [binary, "-p", prompt, "--output-format", "json"],
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"    LLM-контур недоступен: {exc}")
+        return []
+    raw = completed.stdout or ""
+    if not raw.strip():
+        print(f"    LLM-контур: пустой ответ ({(completed.stderr or '').strip()[:80]})")
+        return []
+    # claude --output-format json оборачивает текст в объект; достаём массив
+    text = raw
+    try:
+        wrapper = json.loads(raw)
+        if isinstance(wrapper, dict):
+            text = wrapper.get("result") or wrapper.get("text") or raw
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\[.*\]", text, re.S)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def claude_assisted_pass(results):
+    """Для оставшихся RFQ: подсказка LLM -> ПРОВЕРКА через API дистрибьюторов.
+    В файл попадает только то, что реально подтвердилось ценой у дистрибьютора;
+    строка помечается llm_assisted=True, чтобы человек видел такие позиции."""
+    if not env_flag("ENABLE_CLAUDE_FALLBACK"):
+        return
+    pending = [(i, r) for i, r in enumerate(results)
+               if r.get("status") == "RFQ" and r.get("pn")]
+    if not pending:
+        return
+    limit = int(ENV.get("CLAUDE_MAX_ITEMS", "40"))
+    batch = [r for _, r in pending[:limit]]
+    print(f"\nLLM-контур: уточняю {len(batch)} нерешённых позиций...")
+    suggestions = claude_suggest(batch)
+    if not suggestions:
+        print("LLM-контур: подсказок нет")
+        return
+
+    by_pn = {}
+    for s in suggestions:
+        if isinstance(s, dict) and s.get("requested_pn"):
+            by_pn[canonical_mpn_loose(s["requested_pn"])] = s
+
+    recovered = 0
+    for i, r in pending:
+        s = by_pn.get(canonical_mpn_loose(r["pn"]))
+        if not s:
+            continue
+        mpn = (s.get("suggested_mpn") or "").strip()
+        manu = (s.get("suggested_manufacturer") or r.get("manufacturer") or "").strip()
+        if not mpn or not manu:
+            continue                      # без бренда цену не подставляем (регламент)
+        qty = r.get("qty", 1)
+        # ПРОВЕРКА: ищем предложенный артикул в API; принимаем только подтверждённое
+        offers = [o for o in _collect_offers(mpn, qty, manu, match_pn=mpn)
+                  if mpn_matches(mpn, o.get("mpn", ""))]
+        if not offers:
+            continue
+        cand = _best_candidate(offers, r["pn"], qty)
+        cand["description"] = r.get("description", r["pn"])
+        cand["manufacturer"] = cand.get("manufacturer") or manu
+        cand["llm_assisted"] = True
+        cand["llm_reason"] = (s.get("reason") or "")[:120]
+        results[i] = cand
+        recovered += 1
+        print(f"    LLM+API: {r['pn']} -> {cand.get('resolved_mpn') or mpn} "
+              f"| {cand['distributor']} ${cand['price_usd']}  ({cand['llm_reason']})")
+    print(f"LLM-контур подтвердил позиций: {recovered} из {len(batch)}")
+
+
 def oemsecrets_pass(results):
     """Добивочный проход по RFQ-остатку через oemsecrets (в пределах квоты).
     Позиции с бо́льшим количеством — первыми (важнее для закупки)."""
@@ -1302,6 +1432,9 @@ def write_results(results, output_path, rate_rub):
     F_R2 = PatternFill("solid", fgColor="FFFFFF")
     F_RFQ = PatternFill("solid", fgColor="FFF2CC")
     F_BCOL = PatternFill("solid", fgColor="E2EFDA")
+    # Позиции, восстановленные подсказкой LLM и подтверждённые API — отдельный
+    # цвет, чтобы закупщик мог выборочно перепроверить именно их
+    F_LLM = PatternFill("solid", fgColor="FDE9D9")
     THIN = Side(style="thin", color="BFBFBF")
     BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
@@ -1329,7 +1462,7 @@ def write_results(results, output_path, rate_rub):
             r.get("description", ""), r.get("manufacturer", "")
         ) or ""
         if r.get("status") == "FOUND":
-            base = F_R1 if found_idx % 2 == 0 else F_R2
+            base = F_LLM if r.get("llm_assisted") else (F_R1 if found_idx % 2 == 0 else F_R2)
             found_idx += 1
             # Колонка B: найденный конкретный артикул производителя, когда он
             # отличается от запрошенного (маска x, суффикс упаковки, написание).
@@ -1385,11 +1518,16 @@ def write_results(results, output_path, rate_rub):
     found = sum(1 for r in results if r.get("status") == "FOUND")
     rfq = len(results) - found
     note_row = len(results) + 3
+    llm_rows = sum(1 for r in results if r.get("llm_assisted"))
     note = (f"Найдено: {found} | RFQ: {rfq} | "
             f"Курс USD/RUB (ЦБ + наценка): {rate_rub:.4f} | "
-            f"Цена по ценовому брекету. Источник: официальные API дистрибьюторов "
-            f"(DigiKey Product Information API v4, Newark/Farnell Product Search API, "
-            f"Mouser Search API). Авторизованные: DigiKey, Mouser, Newark/Farnell.")
+            f"Цена по ценовому брекету ≥ количества, приоритет позиций в наличии. "
+            f"Источник цен — только официальные API дистрибьюторов "
+            f"(DigiKey, Mouser, TME, Newark/Farnell).")
+    if llm_rows:
+        note += (f" Позиций, где написание артикула уточнено автоматически и затем "
+                 f"подтверждено у дистрибьютора: {llm_rows} — выделены персиковым, "
+                 f"рекомендуется выборочная проверка.")
     nc = ws.cell(row=note_row, column=1, value=note)
     nc.font = Font(name="Arial", size=9, color="595959")
     nc.alignment = Alignment(horizontal="left", wrap_text=True)
@@ -1544,6 +1682,12 @@ def main():
         oemsecrets_pass(results)
     except Exception as e:
         print(f"oemsecrets-фолбэк пропущен: {e}")
+
+    # LLM-контур: подсказка артикула -> обязательная проверка через API
+    try:
+        claude_assisted_pass(results)
+    except Exception as e:
+        print(f"LLM-контур пропущен: {e}")
 
     write_results(results, out_path, rate_rub)
 

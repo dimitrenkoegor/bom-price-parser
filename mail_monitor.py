@@ -362,6 +362,27 @@ def intake_once(dry_run: bool = False) -> None:
                             f"Письмо от {sender}: '{subject}'\nПапка: {job_dir}\n\nПроблемы:\n- "
                             + "\n- ".join(problems))
 
+            # Страховка: пока автоматической доработки RFQ нет (LLM-контур не
+            # активирован), можно требовать ручной просмотр любого результата,
+            # где остались ненайденные позиции. HOLD_ON_RFQ=true в .env.
+            if rfq_total and env_bool("HOLD_ON_RFQ", False):
+                log(f"HOLD_ON_RFQ: {rfq_total} RFQ — ответ придержан для проверки ({job_dir})")
+                notify_self(
+                    f"нужна проверка: {rfq_total} RFQ",
+                    f"Письмо от {sender}: '{subject}'\n"
+                    f"Готовый файл: {'; '.join(str(p) for p in results)}\n"
+                    f"Список RFQ: {job_dir / 'rfq_list.txt'}\n\n"
+                    f"Итог: {'; '.join(summaries)}\n\n"
+                    f"Клиенту НИЧЕГО не отправлено. Проверьте файл и отправьте вручную,\n"
+                    f"либо снимите HOLD_ON_RFQ в .env для автоматической отправки.")
+                processed.add(fingerprint)
+                inspected.add(fingerprint)
+                state["processed"] = sorted(processed)
+                state["inspected"] = sorted(inspected)
+                save_state(state)
+                client.uid("store", uid, "+FLAGS", "(\\Seen)")
+                continue
+
             send_enabled = env_bool("SEND_ENABLED", True) and not dry_run
             if send_enabled and results:
                 send_reply(message, sender, results, summaries, rfq_total)
