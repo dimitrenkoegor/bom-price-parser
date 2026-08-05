@@ -56,6 +56,12 @@ python price_parser.py --input "<запрос.xlsx>" --output "final/<имя_р�
 
 ## Другие скрипты
 
+- `browser_bom.py` — браузерный каскад по BOM-инструментам агрегаторов
+  (oemsecrets → Octopart → Findchips → TrustedParts): `export` выгружает
+  RFQ-остаток в CSV для загрузки на площадку, `merge` вливает скачанный экспорт
+  обратно с валидацией по регламенту (только в RFQ-строки, брокеры и аналоги
+  отклоняются), `status` — сводка. Сама браузерная нога — по скиллу
+  `.claude/skills/bom-browser-cascade/SKILL.md`.
 - `bomtool_to_final.py <экспорт.xlsx> [выход.xlsx]` — конвертер экспорта
   bomtool.oemsecrets.com в тот же итоговый формат.
 - `update_bom*.py` — статические архивные скрипты прошлых заявок (данные зашиты в код);

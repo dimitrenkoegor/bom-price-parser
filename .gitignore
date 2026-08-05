@@ -13,3 +13,4 @@ monitor.out.log
 monitor.err.log
 monitor.pid
 STOP_MONITOR
+.claude/settings.local.json
