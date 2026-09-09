@@ -3,21 +3,15 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title Проверка одной позиции
 
-where python >nul 2>nul
-if errorlevel 1 (
-  echo [!] Python не найден. Сначала запустите ЗАПУСТИТЬ.bat и установите Python.
-  pause
-  exit /b
-)
+call "%~dp0_python_check.bat" || exit /b 1
 
-python -m pip install --quiet undetected-chromedriver selenium beautifulsoup4 openpyxl webdriver-manager
-
-echo Проверяю одну позицию: C5750X7R1H106KT, количество 320
-echo Откроется окно Chrome - дайте ему пройти проверку Cloudflare, не закрывайте.
+echo Проверяю одну позицию: C5750X7R1H106KT (TDK), количество 320.
+echo Цены идут через API из .env — окна браузера не будет.
 echo.
-python price_parser.py --once C5750X7R1H106KT 320
+python price_parser.py --once C5750X7R1H106KT 320 --manufacturer TDK --yes --output final\_проверка.xlsx
 
 echo.
-echo Если выше видно строку с дистрибьютором и ценой - всё работает,
+echo Если выше видна строка с дистрибьютором и ценой - всё работает,
 echo можно запускать ЗАПУСТИТЬ.bat для всего списка.
+echo Если везде RFQ и «нет ключа» - заполните .env (см. .env.example).
 pause

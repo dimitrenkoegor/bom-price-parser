@@ -1,11 +1,15 @@
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.env
+work/
 final/
 превью_позиции.xlsx
+/*.xlsx
 *.tmp
+.tmp/
 ~$*
-.env
 jobs_mail/
 mail-state.json
 monitor.log
@@ -13,3 +17,4 @@ monitor.out.log
 monitor.err.log
 monitor.pid
 STOP_MONITOR
+.claude/settings.local.json

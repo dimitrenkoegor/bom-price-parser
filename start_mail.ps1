@@ -18,4 +18,3 @@ $python = (Get-Command python -ErrorAction Stop).Source
 $process = Start-Process -FilePath $python -ArgumentList @('mail_monitor.py') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'monitor.out.log') -RedirectStandardError (Join-Path $root 'monitor.err.log') -PassThru
 Set-Content -LiteralPath $pidFile -Value $process.Id -NoNewline
 Write-Host "Монитор почты запущен (PID $($process.Id)). Логи: monitor.log"
-Write-Host "ВАЖНО: не запускайте одновременно agent-mail-bridge (START_ALL.bat) — конфликт за ящик."

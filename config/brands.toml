@@ -1,0 +1,219 @@
+# Словарь для разбора колонки «наименование».
+# Правки сюда — самый дешёвый способ починить неверный разбор (см. docs/parsing.md).
+
+# Русские слова-типы изделия. Снимаются ТОЛЬКО в начале строки, уходят в описание.
+# Многословные должны стоять раньше однословных — сопоставление идёт по длине убыв.
+ru_type_words = [
+  "катушка индуктивности", "усилитель операционный", "операционный усилитель",
+  "держатель предохранителя", "чип-конденсатор", "чип-резистор", "чип конденсатор",
+  "интегральная микросхема", "модуль питания", "источник питания",
+  "кварцевый резонатор", "оптопара", "фотодиод", "светодиод", "стабилитрон",
+  "микросхема", "конденсатор", "резистор", "транзистор", "диод", "дроссель",
+  "трансформатор", "переключатель", "предохранитель", "розетка", "вилка",
+  "разъём", "разъем", "соединитель", "индуктивность", "резонатор", "кварц",
+  "реле", "выключатель", "кнопка", "клемма", "втулка", "сборка", "фильтр",
+  "стабилизатор", "преобразователь", "усилитель", "генератор", "датчик",
+  "индикатор", "дисплей", "память", "процессор", "контроллер", "ферритовая бусина",
+  "варистор", "терморезистор", "термистор", "ограничитель", "супрессор",
+]
+
+# Слова, которые НИКОГДА не являются брендом и не являются артикулом.
+# Гасят ложные срабатывания головной эвристики бренда.
+stop_words = [
+  "AC-DC", "DC-DC", "AC/DC", "DC/DC", "SMD", "SMT", "THT", "ROHS", "PBF",
+  "TYPE-C", "TYPE-A", "TYPE-B", "USB", "USB2.0", "USB3.0", "USB3.1", "USB3.2",
+  "LED", "IC", "MOSFET", "IGBT", "NTC", "PTC", "ESD", "EMI", "RF",
+  "C0G", "X7R", "X5R", "Y5V", "NP0", "NPO", "X6S", "X8R",
+  "TAPE", "REEL", "TRAY", "BULK", "CUT",
+]
+
+# Бренд → его написания. Ключ — каноническое имя, значение — алиасы.
+# Поиск идёт по всей строке, в любой позиции, самое длинное совпадение побеждает.
+[brands]
+"Texas Instruments"       = ["TI", "TEXAS INSTR", "TEXAS INSTRUMENT", "Texas Instr"]
+"National Semiconductor"  = ["NATIONAL SEMI", "NSC", "National"]
+"Analog Devices"          = ["ADI", "AD", "ANALOG DEV", "Analog Devices Inc"]
+"Linear Technology"       = ["LINEAR TECH", "LTC", "Linear"]
+"Maxim Integrated"        = ["MAXIM", "Maxim Integrated Products"]
+"Hittite Microwave"       = ["HITTITE", "HMC"]
+"Infineon Technologies"   = ["INFINEON", "IFX"]
+"International Rectifier" = ["IR", "Int Rectifier"]
+"Cypress Semiconductor"   = ["CYPRESS"]
+"NXP Semiconductors"      = ["NXP", "NXP SEMICONDUCTOR", "NXP SEMI", "Philips Semiconductors", "PHILIPS"]
+"Nexperia"                = ["NEXPERIA USA"]
+"Freescale"               = ["FREESCALE SEMICONDUCTOR"]
+"STMicroelectronics"      = ["ST", "ST MICROELECTRONICS", "ST MICRO", "STMICRO", "SGS-Thomson"]
+"Microchip Technology"    = ["MICROCHIP", "MCHP"]
+"Atmel"                   = []
+"Micrel"                  = []
+"Renesas Electronics"     = ["RENESAS"]
+"Intersil"                = []
+"IDT"                     = ["Integrated Device Technology"]
+"Dialog Semiconductor"    = ["DIALOG"]
+"onsemi"                  = ["ON SEMICONDUCTOR", "ON SEMI", "ONSEMI", "Fairchild Semiconductor"]
+"Fairchild"               = ["FAIRCHILD SEMI"]
+"Diodes Incorporated"     = ["DIODES INC", "DIODES", "Zetex"]
+"Vishay"                  = ["VISHAY INTERTECHNOLOGY", "VISHAY DALE", "VISHAY SILICONIX", "SILICONIX"]
+"Murata"                  = ["MURATA ELECTRONICS", "MURATA MFG", "Murata Manufacturing"]
+"TDK"                     = ["TDK CORPORATION"]
+"EPCOS"                   = ["TDK-EPCOS"]
+"AVX"                     = ["KYOCERA AVX", "AVX Corporation"]
+"Kemet"                   = ["KEMET ELECTRONICS"]
+"Yageo"                   = ["YAGEO CORPORATION", "PHYCOMP"]
+"Samsung Electro-Mechanics" = ["SAMSUNG", "SEMCO"]
+"Taiyo Yuden"             = ["TAIYO-YUDEN"]
+"Nichicon"                = []
+"Panasonic"               = ["PANASONIC ELECTRONIC COMPONENTS", "MATSUSHITA"]
+"Rohm Semiconductor"      = ["ROHM"]
+"Toshiba"                 = ["TOSHIBA SEMICONDUCTOR"]
+"Coilcraft"               = []
+"Wurth Electronics"       = ["WURTH", "WÜRTH", "WURTH ELEKTRONIK", "WÜRTH ELEKTRONIK", "WE"]
+"Bourns"                  = []
+"Littelfuse"              = ["LITTELFUSE INC", "IXYS"]
+"Bel Fuse"                = ["BELFUSE"]
+"TE Connectivity"         = ["TE", "TYCO ELECTRONICS", "TYCO", "AMP", "AXICOM", "TE AXICOM"]
+"Amphenol"                = ["AMPHENOL AEROSPACE", "AMPHENOL ICC", "FCI"]
+"Molex"                   = []
+"JST"                     = ["JAPAN SOLDERLESS TERMINALS"]
+"Hirose"                  = ["HIROSE ELECTRIC", "HRS"]
+"Samtec"                  = []
+"Harwin"                  = []
+"Phoenix Contact"         = []
+"Xilinx"                  = ["AMD XILINX", "AMD-XILINX"]
+"Altera"                  = []
+"Lattice Semiconductor"   = ["LATTICE"]
+"Micron Technology"       = ["MICRON"]
+"Macronix"                = ["MACRONIX INTERNATIONAL", "MXIC"]
+"Winbond"                 = []
+"ISSI"                    = ["Integrated Silicon Solution"]
+"Alliance Memory"         = ["ALLIANCE"]
+"Cypress"                 = []
+"Qorvo"                   = ["RFMD", "TriQuint"]
+"Skyworks"                = ["SKYWORKS SOLUTIONS", "SKYWORKS SOLUTIONS INC", "SKY"]
+"Mini-Circuits"           = ["MINI CIRCUITS", "MINICIRCUITS"]
+"Broadcom"                = ["AVAGO", "AVAGO TECHNOLOGIES"]
+"Silicon Labs"            = ["SILICON LABORATORIES", "SILABS"]
+"Semtech"                 = []
+"Kingbright"              = []
+"LITE-ON"                 = ["LITEON", "LITE ON", "LITE-ON TECHNOLOGY"]
+"Everlight"               = ["EVERLIGHT ELECTRONICS"]
+"Cree"                    = ["WOLFSPEED"]
+"OSRAM"                   = ["ams-OSRAM", "OSRAM Opto"]
+"C&K"                     = ["C&K COMPONENTS", "C AND K", "CK COMPONENTS"]
+"Omron"                   = ["OMRON ELECTRONIC COMPONENTS"]
+"Alps Alpine"             = ["ALPS", "ALPINE"]
+"Mean Well"               = ["MEANWELL", "MEAN-WELL"]
+"Traco Power"             = ["TRACOPOWER", "TRACO"]
+"Recom"                   = ["RECOM POWER"]
+"Wayon"                   = ["WAYON ELECTRONICS"]
+"Ruichi"                  = ["РУИЧИ", "RUICHI ELECTRONICS"]
+"Bel"                     = []
+"Abracon"                 = []
+"Epson"                   = ["SEIKO EPSON", "EPSON TOYOCOM"]
+"NDK"                     = ["Nihon Dempa Kogyo"]
+"IQD"                     = ["IQD Frequency Products"]
+"Laird"                   = ["LAIRD TECHNOLOGIES"]
+"Pulse Electronics"       = ["PULSE"]
+"Sumida"                  = []
+"Chilisin"                = []
+"Delta Electronics"       = ["DELTA"]
+"XP Power"                = ["XPPOWER"]
+"Nordic Semiconductor"    = ["NORDIC"]
+"Espressif"               = ["ESPRESSIF SYSTEMS"]
+"Holtek"                  = []
+"UMW"                     = []
+"Chipsen"                 = []
+"Микрон"                  = ["MIKRON"]
+"Интеграл"                = ["INTEGRAL"]
+"Ангстрем"                = ["ANGSTREM"]
+# --- добавлено при слиянии словарей с bom-price-parser (KNOWN_MFR) ---
+"Jauch"                   = ["JAUCH QUARTZ"]
+"Dalicap"                 = []
+"Hitano"                  = ["HITANO ENTERPRISE"]
+"Jamicon"                 = []
+"Golledge"                = ["GOLLEDGE ELECTRONICS"]
+"Voltronics"              = []
+"Knowles"                 = ["KNOWLES PRECISION DEVICES", "DLI"]
+"Kyocera"                 = ["KYOCERA CORPORATION"]
+"Adam Tech"               = ["ADAMTECH"]
+"Harting"                 = []
+"Weidmuller"              = ["WEIDMÜLLER", "WEIDMULLER INTERFACE"]
+"Wago"                    = []
+"Raltron"                 = ["RALTRON ELECTRONICS"]
+"Johanson"                = ["JOHANSON TECHNOLOGY", "JOHANSON DIELECTRICS"]
+"Sunlord"                 = []
+"Walsin"                  = ["WALSIN TECHNOLOGY"]
+"CUI"                     = ["CUI DEVICES", "CUI INC"]
+"Aimtec"                  = []
+"Susumu"                  = []
+"Meggitt"                 = ["MEGGITT ELECTRONICS"]
+"Switronic"               = []
+"Huber+Suhner"            = ["HUBER SUHNER", "HUBER & SUHNER"]
+"3Peak"                   = ["3PEAK INC"]
+"FCL Components"          = ["FCL", "FUJITSU COMPONENTS"]
+"Fujitsu"                 = []
+"Spansion"                = []
+"Intel"                   = []
+"Nuvoton"                 = ["NUVOTON TECHNOLOGY"]
+"Marvell"                 = []
+"Power Integrations"      = []
+"Vicor"                   = []
+"Monolithic Power Systems" = ["MPS"]
+"Melexis"                 = []
+"Allegro MicroSystems"    = ["ALLEGRO"]
+"Bosch Sensortec"         = []
+"Sensirion"               = []
+"Honeywell"               = []
+"Comchip"                 = ["COMCHIP TECHNOLOGY"]
+"Central Semiconductor"   = []
+"Taiwan Semiconductor"    = []
+"MCC"                     = ["MICRO COMMERCIAL", "MICRO COMMERCIAL COMPONENTS"]
+"Sanken"                  = []
+"Mitel"                   = []
+
+# Поглощения: старый бренд → кто им владеет сейчас.
+# Используется, чтобы предложение от правопреемника не помечалось как «бренд не совпал».
+[acquired_by]
+"Linear Technology"       = "Analog Devices"
+"Maxim Integrated"        = "Analog Devices"
+"Hittite Microwave"       = "Analog Devices"
+"Fairchild"               = "onsemi"
+"International Rectifier" = "Infineon Technologies"
+"Cypress Semiconductor"   = "Infineon Technologies"
+"Cypress"                 = "Infineon Technologies"
+"Atmel"                   = "Microchip Technology"
+"Micrel"                  = "Microchip Technology"
+"IDT"                     = "Renesas Electronics"
+"Intersil"                = "Renesas Electronics"
+"Dialog Semiconductor"    = "Renesas Electronics"
+"Freescale"               = "NXP Semiconductors"
+"EPCOS"                   = "TDK"
+"Xilinx"                  = "AMD"
+"Altera"                  = "Intel"
+"Avago"                   = "Broadcom"
+"Zetex"                   = "Diodes Incorporated"
+"Siliconix"               = "Vishay"
+"IXYS"                    = "Littelfuse"
+"TriQuint"                = "Qorvo"
+"RFMD"                    = "Qorvo"
+"Spansion"                = "Infineon Technologies"
+"National Semiconductor"  = "Texas Instruments"
+# Nexperia выделена из NXP (Standard Products, 2017): старые BOM пишут NXP или Philips
+"Nexperia"                = "NXP Semiconductors"
+# Fujitsu продала релейный бизнес — дистрибьюторы значат его как FCL Components
+"Fujitsu"                 = "FCL Components"
+# Silicon Labs передала инфраструктурное и автомобильное направления Skyworks (2021)
+"Silicon Labs"            = "Skyworks"
+"Mitel"                   = "Microchip Technology"
+
+# Хвостовые пометки правопреемника прямо в строке: «Linear Technology /AD».
+# Ключ — то, что стоит после слэша; значение — канон.
+[slash_notes]
+"AD"   = "Analog Devices"
+"ADI"  = "Analog Devices"
+"TI"   = "Texas Instruments"
+"ON"   = "onsemi"
+"NXP"  = "NXP Semiconductors"
+"IFX"  = "Infineon Technologies"
+"MCHP" = "Microchip Technology"
+"AMD"  = "AMD"

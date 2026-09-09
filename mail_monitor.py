@@ -5,7 +5,7 @@
 («найти цены», «просчитать BOM», «дай цены», «прайс») и вложением Excel/TXT →
 прогоняет вложение через price_parser.py → отвечает на письмо готовым файлом
 (SEND_ENABLED=true) → RFQ-остаток пишет в jobs_mail/<job>/rfq_list.txt
-(его потом можно добить вручную через Claude + oemsecrets).
+(его закрывают ручным запросом поставщику).
 
 Настройки берутся из .env рядом со скриптом (дополнительно к ключам API):
     MAIL_IMAP_HOST=imap.mail.ru
@@ -14,9 +14,12 @@
     MAIL_SMTP_HOST=smtp.mail.ru
     MAIL_SMTP_PORT=465
     ALLOWED_SENDERS=e.dimitrenko@chainchip.ru        # через ; можно @домен
+    MAIL_IMAP_MAILBOX=INBOX
     POLL_SECONDS=60
     SEND_ENABLED=true
+    HOLD_ON_RFQ=true               # при RFQ ответ клиенту придерживается, письмо себе
     ENABLE_CLAUDE_FALLBACK=false   # true после `claude` /login — советы по RFQ
+Полный список — .env.example, описание — .agents/workflows/mail-monitor.md.
 
 Запуск:
     python mail_monitor.py            # бесконечный цикл (демон)
@@ -24,8 +27,7 @@
     python mail_monitor.py --once --dry-run   # без отправки писем
 
 Остановка демона: файл STOP_MONITOR рядом со скриптом (создаёт STOP_MAIL.bat)
-или Ctrl+C. ВАЖНО: не запускайте одновременно с agent-mail-bridge — оба
-слушают один ящик и будут отбирать письма друг у друга.
+или Ctrl+C. Один ящик — один монитор: второй экземпляр будет отбирать письма.
 """
 
 from __future__ import annotations
@@ -49,6 +51,16 @@ from email.utils import formataddr, parseaddr
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR / "src"))
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")   # консоль Windows по умолчанию cp866
+        except (AttributeError, ValueError):
+            pass
+from bomprice import llm as _llm  # noqa: E402
+from bomprice import store as _store  # noqa: E402
+
 STATE_PATH = SCRIPT_DIR / "mail-state.json"
 STOP_FLAG = SCRIPT_DIR / "STOP_MONITOR"
 JOB_ROOT = SCRIPT_DIR / "jobs_mail"
@@ -57,19 +69,7 @@ SUPPORTED = {".xlsx", ".xlsm", ".xls", ".txt"}
 TRIGGER = re.compile(r"(?:найти|дай|собери|собрать)\s*цены|просчитать\s*bom|прайс|цены\s*с\s*площад", re.IGNORECASE)
 
 
-def load_env() -> dict[str, str]:
-    env: dict[str, str] = {}
-    path = SCRIPT_DIR / ".env"
-    if path.exists():
-        for raw in path.read_text(encoding="utf-8-sig").splitlines():
-            line = raw.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env[key.strip()] = value.strip()
-    return env
-
-
-ENV = load_env()
+ENV = _store.load_env()          # тот же .env и тот же разбор, что у парсера
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -259,8 +259,8 @@ def claude_advisory(job_dir: Path, rfq_parts: list[str]) -> None:
         + json.dumps(rfq_parts[:100], ensure_ascii=False)
     )
     try:
-        completed = subprocess.run(["claude", "-p", prompt, "--output-format", "json"],
-                                   cwd=job_dir, text=True, capture_output=True,
+        completed = subprocess.run([_llm.binary(), "-p", "--output-format", "json"],
+                                   input=prompt, cwd=job_dir, text=True, capture_output=True,
                                    timeout=300, encoding="utf-8", errors="replace")
         (job_dir / "fallback.json").write_text(completed.stdout or completed.stderr or "", encoding="utf-8")
     except (OSError, subprocess.TimeoutExpired) as exc:

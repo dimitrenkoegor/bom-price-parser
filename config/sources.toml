@@ -1,0 +1,125 @@
+# Реестр площадок котировщика. Это ДАННЫЕ, не код — включать/выключать источники правкой этого файла.
+# Формат записи общий с count pars (docs там: docs/sources.md); здесь только tier = "api".
+#
+# kind:  franchise  — авторизованный дистрибьютор, опрашивается в основном проходе;
+#        aggregator — добивка RFQ-остатка, продавцы фильтруются по authorized_sellers
+#                     из config/settings.toml.
+# rate.daily — суточная квота, счётчик в work/quota.json (для oemsecrets перекрывается
+#              переменной OEMSECRETS_DAILY_LIMIT в .env).
+
+[[source]]
+id = "digikey"
+title = "DigiKey"
+url = "https://www.digikey.com"
+tier = "api"
+adapter = "digikey"
+kind = "franchise"
+region = "global"
+gives = ["price", "stock", "lead", "moq", "packaging", "lifecycle", "rohs"]
+auth_env = ["DIGIKEY_CLIENT_ID", "DIGIKEY_CLIENT_SECRET"]
+rate = { rps = 2.0, daily = 1000 }
+variant_policy = "all"
+query_url = "https://www.digikey.com/en/products/result?keywords={mpn}"
+enabled = true
+notes = "Product Information v4, OAuth2 client_credentials. Валюта USD."
+
+[[source]]
+id = "mouser"
+title = "Mouser"
+url = "https://www.mouser.com"
+tier = "api"
+adapter = "mouser"
+kind = "franchise"
+region = "global"
+gives = ["price", "stock", "lead", "moq", "packaging", "lifecycle", "rohs"]
+auth_env = ["MOUSER_API_KEY"]
+rate = { rps = 0.5, daily = 1000 }
+variant_policy = "first_hit"
+query_url = "https://www.mouser.com/c/?q={mpn}"
+enabled = true
+notes = "Search API: partnumber, при пустом — keyword. Темп 0.5 rps: на 2 rps ключ ловит 403 TooManyRequests."
+
+[[source]]
+id = "newark"
+title = "Newark/Farnell"
+url = "https://www.newark.com"
+tier = "api"
+adapter = "farnell"
+kind = "franchise"
+region = "us"
+gives = ["price", "stock", "lead", "moq", "packaging", "rohs"]
+auth_env = ["FARNELL_API_KEY"]
+rate = { rps = 2.0, daily = 1000 }
+variant_policy = "all"
+store = "www.newark.com"
+currency = "USD"
+query_url = "https://www.newark.com/search?st={mpn}"
+enabled = true
+notes = "element14 Product Search API, витрина Newark (USD). Тот же ключ открывает uk.farnell.com (GBP) — добавить второй записью, если нужен европейский сток."
+
+[[source]]
+id = "tme"
+title = "TME"
+url = "https://www.tme.eu"
+tier = "api"
+adapter = "tme"
+kind = "franchise"
+region = "eu"
+gives = ["price", "stock", "moq", "packaging"]
+auth_env = ["TME_TOKEN", "TME_APP_SECRET"]
+rate = { rps = 2.0 }
+variant_policy = "all"
+currency = "USD"
+query_url = "https://www.tme.eu/en/katalog/?search={mpn}"
+enabled = true
+notes = "Product API v2, OAuth2 Basic→Bearer; products → search → data (prices, stock) в USD, страна DE."
+
+# ── добивка RFQ-остатка ────────────────────────────────────────────────────────
+
+[[source]]
+id = "oemsecrets"
+title = "OEMsecrets API"
+url = "https://www.oemsecrets.com"
+tier = "api"
+adapter = "oemsecrets"
+kind = "aggregator"
+region = "global"
+gives = ["price", "stock", "lead", "moq", "seller", "dc"]
+auth_env = ["OEMSECRETS_API_KEY"]
+rate = { rps = 1.0, daily = 10 }
+variant_policy = "first_hit"
+query_url = "https://www.oemsecrets.com/compare/{mpn}"
+enabled = true
+notes = "140+ дистрибьюторов; в котировку идут только авторизованные (authorized_sellers). Без ключа пропускается; квота 10/сут по умолчанию."
+
+[[source]]
+id = "nexar"
+title = "Nexar / Octopart API"
+url = "https://octopart.com"
+tier = "api"
+adapter = "nexar"
+kind = "aggregator"
+region = "global"
+gives = ["price", "stock", "lead", "moq", "packaging", "seller", "lifecycle"]
+auth_env = ["NEXAR_CLIENT_ID", "NEXAR_CLIENT_SECRET"]
+rate = { rps = 1.0 }
+variant_policy = "first_hit"
+query_url = "https://octopart.com/search?q={mpn}"
+enabled = false
+notes = "Один ключ закрывает Verical, Arrow, Avnet, TTI, Future, RS. Включить после регистрации на nexar.com."
+
+[[source]]
+id = "arrow"
+title = "Arrow"
+url = "https://www.arrow.com"
+tier = "api"
+adapter = "arrow"
+kind = "franchise"
+region = "global"
+gives = ["price", "stock", "lead", "moq"]
+auth_env = ["ARROW_API_KEY", "ARROW_LOGIN"]
+rate = { rps = 1.0 }
+variant_policy = "all"
+query_url = "https://www.arrow.com/en/products/search?q={mpn}"
+enabled = false
+notes = "Включить, когда придёт ключ."

@@ -4,39 +4,21 @@ cd /d "%~dp0"
 title Парсер цен ЭКБ
 
 echo ================================================
-echo   Парсер цен на ЭКБ (oemsecrets)
+echo   Парсер цен на ЭКБ (API дистрибьюторов)
 echo ================================================
 echo.
-echo Скрипт сам найдёт свежий Excel-запрос в этой папке
-echo (или в папке start), распознает позиции, покажет превью
-echo и спросит подтверждение перед поиском цен.
+echo Скрипт сам найдёт свежий Excel-запрос в папке start (или рядом),
+echo распознает позиции, покажет превью и спросит подтверждение
+echo перед поиском цен. Браузер не нужен: цены идут через API
+echo DigiKey, Mouser, TME и Newark/Farnell по ключам из файла .env.
 echo.
 
-where python >nul 2>nul
-if errorlevel 1 (
-  echo [!] Python не найден на компьютере.
-  echo.
-  echo Установите Python:
-  echo   1) Откройте https://www.python.org/downloads/
-  echo   2) Запустите установщик
-  echo   3) ВАЖНО: поставьте галочку "Add python.exe to PATH", затем Install Now
-  echo   4) После установки снова дважды кликните этот файл
-  echo.
-  pause
-  exit /b
-)
-
-echo [1/2] Проверяю зависимости (один раз, может занять пару минут)...
-python -m pip install --quiet --upgrade pip
-python -m pip install --quiet undetected-chromedriver selenium beautifulsoup4 openpyxl webdriver-manager
-echo      готово.
-echo.
+call "%~dp0_python_check.bat" || exit /b 1
 
 echo [2/2] Запуск. Сначала будет ПРЕВЬЮ распознанных позиций.
 echo      - проверьте файл "превью_позиции.xlsx" (откроется как обычный Excel),
-echo        при необходимости поправьте артикулы и СОХРАНИТЕ его,
+echo        при необходимости поправьте артикулы и производителей, СОХРАНИТЕ его,
 echo      - затем вернитесь сюда и нажмите Enter.
-echo      Потом откроется окно Chrome для поиска цен - не закрывайте его.
 echo.
 python price_parser.py
 

@@ -1,0 +1,40 @@
+# bom-price-parser — общие настройки прогона.
+
+[run]
+# Сколько вариантов написания артикула задавать площадке, пока не найдётся хоть что-то.
+max_variants = 3
+# Потоков по позициям. На один хост всё равно не больше одного запроса в полёте.
+workers = 4
+# Таймаут одного HTTP-запроса, секунд.
+timeout = 25
+# Повторы при 429/5xx/сетевом сбое.
+retries = 2
+
+[cache]
+# Пока ответ площадки свежее — сеть не трогаем (часы). Котировка живёт сутки.
+price_ttl_hours = 24
+# Сырые ответы источников: work/cache/<source>/<sha1>.json
+keep_raw = true
+
+[currency]
+# Все цены приводятся к USD; RUB = USD × (курс ЦБ + наценка). Флаги --rub-rate/--rub-markup перекрывают.
+rub_markup = 4.0
+# Ручной курс USD/RUB. 0 = брать курс ЦБ на сегодня.
+rub_rate = 0
+fx_ttl_hours = 24
+
+[selection]
+# Регламент отбора — src/bomprice/select.py, правила — .agents/rules/price-selection.md.
+# Качества совпадения артикула, которые принимаются (остальное — RFQ):
+#   exact — с точностью до разделителей; mask — по маске x/Xx/XX регламента;
+#   suffix — отличие только в упаковочном хвосте; prefix_series — достроен префикс серии.
+accept_quality = ["exact", "mask", "suffix", "prefix_series"]
+# Авторизованные продавцы у агрегаторов (oemsecrets, nexar) — подстроки имени, без регистра.
+# Франшизные API (DigiKey, Mouser, TME, Newark/Farnell) авторизованы по определению.
+authorized_sellers = [
+  "digikey", "digi-key", "mouser", "tme", "farnell", "newark", "element14",
+  "arrow", "verical", "tti", "avnet", "rs comp", "rs-online", "rs de", "rs americas",
+  "future", "heilind", "rutronik", "buerklin", "bürklin",
+]
+# Сколько найденных точных артикулов задавать площадкам повторно (второй проход).
+resolved_limit = 3
