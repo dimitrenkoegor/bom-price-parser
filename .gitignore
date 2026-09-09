@@ -18,3 +18,6 @@ monitor.err.log
 monitor.pid
 STOP_MONITOR
 .claude/settings.local.json
+
+# входные заявки заказчиков — только на диске, не в репозитории
+start/*.xlsx
