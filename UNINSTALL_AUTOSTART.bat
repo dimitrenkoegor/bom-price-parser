@@ -1,11 +1,6 @@
 @echo off
-rem Отключает автозапуск монитора почты при входе в Windows.
-if exist "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\bom_mail_monitor.bat" (
-    del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\bom_mail_monitor.bat"
-    echo Автозапуск ОТКЛЮЧЁН: монитор больше не будет стартовать при входе в Windows.
-    echo Если монитор сейчас запущен - он продолжает работать.
-    echo Остановить работающий монитор: STOP_MAIL.bat
-) else (
-    echo Автозапуск и так не установлен.
-)
+rem Removes mail monitor autostart. A running monitor keeps running: use STOP_MAIL.bat.
+rem ASCII only: all text lives in _launcher.ps1 (cmd.exe misreads UTF-8 .bat files).
+cd /d "%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_launcher.ps1" -Mode autostart-remove
 pause

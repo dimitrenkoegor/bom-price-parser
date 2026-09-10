@@ -12,7 +12,7 @@
 | один цикл, без отправки | `python mail_monitor.py --once --dry-run` |
 | демон в фоне | `START_MAIL.bat` (пишет `monitor.pid`, логи `monitor.log`, `monitor.out.log`) |
 | остановить | `STOP_MAIL.bat` (флаг `STOP_MONITOR`, через 5 с — принудительно) |
-| автозапуск при входе в Windows | `INSTALL_AUTOSTART.bat` — кладёт в Startup файл с абсолютным путём к проекту; после переноса папки запустить заново. `UNINSTALL_AUTOSTART.bat` удаляет |
+| автозапуск при входе в Windows | `INSTALL_AUTOSTART.bat` — пишет значение `bom_mail_monitor` в `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` с абсолютным путём к проекту (старый `bom_mail_monitor.bat` из Startup удаляет); после переноса папки запустить заново. `UNINSTALL_AUTOSTART.bat` удаляет оба |
 
 Один ящик — один монитор: второй экземпляр будет отбирать письма.
 
