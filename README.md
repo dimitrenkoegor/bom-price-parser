@@ -32,7 +32,7 @@ copy .env.example .env        # и заполнить ключи
 
 ```bash
 python price_parser.py --input "start\запрос.xlsx" --output "final\результат.xlsx" --yes
-python price_parser.py --once C5750X7R1H106KT 320 --manufacturer TDK --yes
+python price_parser.py --once LM358DR 100 --manufacturer "Texas Instruments" --yes
 python -m unittest discover tests
 ```
 

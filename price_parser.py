@@ -34,7 +34,7 @@
     python price_parser.py --input "149 торги.xlsx"
     python price_parser.py --preview-only        # только распознать в превью, без цен
     python price_parser.py --yes                  # не спрашивать подтверждение
-    python price_parser.py --once C5750X7R1H106KT 320   # проверка одной позиции
+    python price_parser.py --once LM358DR 100 --manufacturer "Texas Instruments"   # проверка одной позиции
     python price_parser.py --rub-markup 4 --rate 1.16
 """
 
