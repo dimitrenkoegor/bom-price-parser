@@ -1,16 +1,5 @@
 @echo off
-chcp 65001 >nul
+rem ASCII only: all text lives in _launcher.ps1 (cmd.exe misreads UTF-8 .bat files).
 cd /d "%~dp0"
-title Распознать позиции (без поиска цен)
-
-call "%~dp0_python_check.bat" || exit /b 1
-
-echo Распознаю позиции из Excel-запроса в "превью_позиции.xlsx" (цены не ищу)...
-echo.
-python price_parser.py --preview-only
-
-echo.
-echo Откройте "превью_позиции.xlsx", проверьте артикулы и производителей.
-echo Красным подсвечен нераспознанный артикул, жёлтым - пустой производитель
-echo (такая позиция уйдёт в RFQ). Впишите вручную и сохраните файл.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_launcher.ps1" -Mode preview
 pause

@@ -1,29 +1,5 @@
 @echo off
-chcp 65001 >nul
+rem ASCII only: all text lives in _launcher.ps1 (cmd.exe misreads UTF-8 .bat files).
 cd /d "%~dp0"
-title Парсер цен ЭКБ
-
-echo ================================================
-echo   Парсер цен на ЭКБ (API дистрибьюторов)
-echo ================================================
-echo.
-echo Скрипт сам найдёт свежий Excel-запрос в папке start (или рядом),
-echo распознает позиции, покажет превью и спросит подтверждение
-echo перед поиском цен. Браузер не нужен: цены идут через API
-echo DigiKey, Mouser, TME и Newark/Farnell по ключам из файла .env.
-echo.
-
-call "%~dp0_python_check.bat" || exit /b 1
-
-echo [2/2] Запуск. Сначала будет ПРЕВЬЮ распознанных позиций.
-echo      - проверьте файл "превью_позиции.xlsx" (откроется как обычный Excel),
-echo        при необходимости поправьте артикулы и производителей, СОХРАНИТЕ его,
-echo      - затем вернитесь сюда и нажмите Enter.
-echo.
-python price_parser.py
-
-echo.
-echo ================================================
-echo   Результат: final\BOM_Приложение_1.xlsx
-echo ================================================
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_launcher.ps1" -Mode run
 pause

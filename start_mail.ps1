@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pidFile = Join-Path $root 'monitor.pid'
 $stopFlag = Join-Path $root 'STOP_MONITOR'
