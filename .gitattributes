@@ -1,0 +1,5 @@
+# Запускалки хранятся байт в байт: CRLF и BOM нужны cmd.exe и Windows PowerShell 5.1,
+# а перевод концов строк на checkout/в архиве GitHub их бы потерял.
+*.bat -text
+*.cmd -text
+*.ps1 -text

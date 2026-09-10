@@ -1,13 +1,6 @@
 @echo off
-rem Устанавливает автозапуск монитора почты при входе в Windows.
-rem Запустите этот файл один раз двойным кликом.
-copy /Y "%~dp0autostart_monitor.bat" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\bom_mail_monitor.bat"
-if %errorlevel%==0 (
-    echo.
-    echo Автозапуск установлен: монитор почты будет стартовать при входе в Windows.
-    echo Удалить автозапуск: удалите файл bom_mail_monitor.bat из папки
-    echo %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
-) else (
-    echo Не удалось скопировать файл автозапуска.
-)
+rem Installs mail monitor autostart (shortcut in the Startup folder). Run once.
+rem ASCII only: all text lives in _launcher.ps1 (cmd.exe misreads UTF-8 .bat files).
+cd /d "%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_launcher.ps1" -Mode autostart-install
 pause

@@ -1,11 +1,12 @@
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.env
 final/
 превью_позиции.xlsx
 *.tmp
 ~$*
-.env
 jobs_mail/
 mail-state.json
 monitor.log
@@ -14,3 +15,7 @@ monitor.err.log
 monitor.pid
 STOP_MONITOR
 .claude/settings.local.json
+
+# входные заявки заказчиков — только на диске, не в репозитории
+/*.xlsx
+start/*.xlsx
