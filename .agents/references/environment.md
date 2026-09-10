@@ -32,7 +32,6 @@ config/settings.toml     темп, кэш, курс, [selection]
 config/sources.toml      площадки: только tier = "api"
 config/brands.toml       словарь брендов — ОБЩИЙ с count pars
 tests/                   unittest; test_mpn.py общий с count pars
-archive/                 старые заявки с зашитыми данными — не использовать
 work/                    кэш ответов, квоты, курсы (удаляемо)
 start/  final/           вход / выход
 ```
@@ -47,7 +46,7 @@ start/  final/           вход / выход
 
 | Группа | Переменные |
 |---|---|
-| API основного прохода | `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET`, `MOUSER_API_KEY`, `FARNELL_API_KEY`, `TME_TOKEN`, `TME_APP_SECRET`, `TME_CUSTOMER_NUMBER` |
+| API основного прохода | `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET`, `MOUSER_API_KEY`, `FARNELL_API_KEY`, `TME_TOKEN`, `TME_APP_SECRET` |
 | добивка RFQ | `OEMSECRETS_API_KEY`, `OEMSECRETS_DAILY_LIMIT`, `NEXAR_CLIENT_ID`, `NEXAR_CLIENT_SECRET`, `ARROW_API_KEY`, `ARROW_LOGIN` |
 | LLM-контур | `ENABLE_CLAUDE_FALLBACK`, `CLAUDE_MAX_ITEMS`, `CLAUDE_BIN` |
 | почта | `MAIL_IMAP_HOST`, `MAIL_IMAP_MAILBOX`, `MAIL_USER`, `MAIL_PASSWORD`, `MAIL_SMTP_HOST`, `MAIL_SMTP_PORT`, `ALLOWED_SENDERS`, `POLL_SECONDS`, `SEND_ENABLED`, `HOLD_ON_RFQ` |

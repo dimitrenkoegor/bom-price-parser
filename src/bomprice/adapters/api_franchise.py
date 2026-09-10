@@ -268,38 +268,3 @@ def tme(src, query: str):
             "source_url": prod.get("product_information_page") or src.deep_link(query),
         })
     return offers, priced
-
-
-# ── LCSC (без ключа) ─────────────────────────────────────────────────────────
-
-def lcsc(src, query: str):
-    """Публичный поисковый JSON витрины. Ключ не нужен, но эндпоинт неофициальный:
-    при смене формата источник честно покажет ошибку в листе «Источники»."""
-    url = ("https://wmsc.lcsc.com/ftps/wm/search/global?keyword="
-           + urllib.parse.quote(query))
-    payload = net.get_json(url, rps=src.rps,
-                           headers={"Referer": "https://www.lcsc.com/"})
-
-    result = payload.get("result") or {}
-    products = (result.get("productSearchResultVO") or {}).get("productList") or []
-    if not products and result.get("tipProductDetailUrlVO"):
-        products = [result["tipProductDetailUrlVO"]]
-
-    offers = []
-    for p in products:
-        breaks = [{"qty": t.get("ladder"), "price": t.get("usdPrice") or t.get("productPrice"),
-                   "currency": "USD"} for t in p.get("productPriceList") or []]
-        code = p.get("productCode") or ""
-        offers.append({
-            "offer_mpn": (p.get("productModel") or "").strip(),
-            "offer_pn": (p.get("productModel") or "").strip(),
-            "sku": code,
-            "manufacturer": p.get("brandNameEn") or "",
-            "stock_qty": p.get("stockNumber") or p.get("stockJs"),
-            "moq": p.get("minPacketNumber"), "order_multiple": p.get("minBuyNumber"),
-            "packaging": p.get("encapStandard") or "",
-            "price_breaks": breaks, "currency": "USD",
-            "source_url": (f"https://www.lcsc.com/product-detail/{code}.html"
-                           if code else src.deep_link(query)),
-        })
-    return offers, payload

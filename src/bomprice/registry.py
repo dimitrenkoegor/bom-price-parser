@@ -24,7 +24,6 @@ class Source:
     variant_policy: str = "all"
     query_url: str = ""
     bom_tool: str = ""
-    export: dict = field(default_factory=dict)
     store_id: str = ""
     currency: str = ""
     accepts_cyrillic_mpn: bool = False
@@ -41,9 +40,6 @@ class Source:
     @property
     def daily_limit(self) -> int:
         return int(self.rate.get("daily", 0))
-
-    def has_keys(self) -> bool:
-        return all(store.env(name) for name in self.auth_env)
 
     def missing_keys(self) -> list[str]:
         return [name for name in self.auth_env if not store.env(name)]

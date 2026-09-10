@@ -18,7 +18,6 @@ region = "global"
 gives = ["price", "stock", "lead", "moq", "packaging", "lifecycle", "rohs"]
 auth_env = ["DIGIKEY_CLIENT_ID", "DIGIKEY_CLIENT_SECRET"]
 rate = { rps = 2.0, daily = 1000 }
-variant_policy = "all"
 query_url = "https://www.digikey.com/en/products/result?keywords={mpn}"
 enabled = true
 notes = "Product Information v4, OAuth2 client_credentials. Валюта USD."
@@ -34,7 +33,6 @@ region = "global"
 gives = ["price", "stock", "lead", "moq", "packaging", "lifecycle", "rohs"]
 auth_env = ["MOUSER_API_KEY"]
 rate = { rps = 0.5, daily = 1000 }
-variant_policy = "first_hit"
 query_url = "https://www.mouser.com/c/?q={mpn}"
 enabled = true
 notes = "Search API: partnumber, при пустом — keyword. Темп 0.5 rps: на 2 rps ключ ловит 403 TooManyRequests."
@@ -50,7 +48,6 @@ region = "us"
 gives = ["price", "stock", "lead", "moq", "packaging", "rohs"]
 auth_env = ["FARNELL_API_KEY"]
 rate = { rps = 2.0, daily = 1000 }
-variant_policy = "all"
 store = "www.newark.com"
 currency = "USD"
 query_url = "https://www.newark.com/search?st={mpn}"
@@ -68,7 +65,6 @@ region = "eu"
 gives = ["price", "stock", "moq", "packaging"]
 auth_env = ["TME_TOKEN", "TME_APP_SECRET"]
 rate = { rps = 2.0 }
-variant_policy = "all"
 currency = "USD"
 query_url = "https://www.tme.eu/en/katalog/?search={mpn}"
 enabled = true
@@ -87,7 +83,6 @@ region = "global"
 gives = ["price", "stock", "lead", "moq", "seller", "dc"]
 auth_env = ["OEMSECRETS_API_KEY"]
 rate = { rps = 1.0, daily = 10 }
-variant_policy = "first_hit"
 query_url = "https://www.oemsecrets.com/compare/{mpn}"
 enabled = true
 notes = "140+ дистрибьюторов; в котировку идут только авторизованные (authorized_sellers). Без ключа пропускается; квота 10/сут по умолчанию."
@@ -103,7 +98,6 @@ region = "global"
 gives = ["price", "stock", "lead", "moq", "packaging", "seller", "lifecycle"]
 auth_env = ["NEXAR_CLIENT_ID", "NEXAR_CLIENT_SECRET"]
 rate = { rps = 1.0 }
-variant_policy = "first_hit"
 query_url = "https://octopart.com/search?q={mpn}"
 enabled = false
 notes = "Один ключ закрывает Verical, Arrow, Avnet, TTI, Future, RS. Включить после регистрации на nexar.com."
@@ -119,7 +113,6 @@ region = "global"
 gives = ["price", "stock", "lead", "moq"]
 auth_env = ["ARROW_API_KEY", "ARROW_LOGIN"]
 rate = { rps = 1.0 }
-variant_policy = "all"
 query_url = "https://www.arrow.com/en/products/search?q={mpn}"
 enabled = false
 notes = "Включить, когда придёт ключ."

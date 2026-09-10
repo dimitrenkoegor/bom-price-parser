@@ -56,6 +56,5 @@ python price_parser.py --once <PN> <QTY> --manufacturer <бренд> --yes
 ## Где лежат файлы
 
 - `start/` — входные запросы; `final/` — результаты (в репозиторий не попадают).
-- `archive/update_bom*.py` — архив старых заявок с зашитыми данными, не использовать.
 
 Ключи, домены, зависимости, диагностика — [`../references/environment.md`](../references/environment.md).

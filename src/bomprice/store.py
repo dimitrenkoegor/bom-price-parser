@@ -99,11 +99,6 @@ def env_flag(key: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def reset_env_cache() -> None:
-    global _env
-    _env = None
-
-
 # ── кэш сырых ответов ────────────────────────────────────────────────────────
 
 def cache_path(source_id: str, query: str) -> Path:
