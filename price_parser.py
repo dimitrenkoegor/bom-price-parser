@@ -4,7 +4,7 @@
 отбора одного предложения). Флаги: python price_parser.py --help.
 
     python price_parser.py --input "start\\запрос.xlsx" --output final\\result.xlsx --yes
-    python price_parser.py --once C5750X7R1H106KT 320 --manufacturer TDK --yes
+    python price_parser.py --once LM358DR 100 --manufacturer "Texas Instruments" --yes
     python price_parser.py --preview-only
 """
 

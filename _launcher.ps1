@@ -92,10 +92,10 @@ switch ($Mode) {
     'once' {
         $Host.UI.RawUI.WindowTitle = 'Проверка одной позиции'
         if (-not (Test-Python)) { exit 1 }
-        Say 'Проверяю одну позицию: C5750X7R1H106KT (TDK), количество 320.'
+        Say 'Проверяю одну позицию: LM358DR (Texas Instruments), количество 100.'
         Say 'Цены идут через API из .env — окна браузера не будет.'
         Say
-        & python price_parser.py --once C5750X7R1H106KT 320 --manufacturer TDK --yes --output 'final\_проверка.xlsx'
+        & python price_parser.py --once LM358DR 100 --manufacturer 'Texas Instruments' --yes --output 'final\_проверка.xlsx'
         $code = $LASTEXITCODE
         Say
         Say 'Если выше видна строка с дистрибьютором и ценой - всё работает,'
