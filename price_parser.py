@@ -1442,9 +1442,6 @@ def write_results(results, output_path, rate_rub):
     # Позиции, восстановленные подсказкой LLM и подтверждённые API — отдельный
     # цвет, чтобы закупщик мог выборочно перепроверить именно их
     F_LLM = PatternFill("solid", fgColor="FDE9D9")
-    # Позиции из BOM-инструментов агрегаторов (браузерный каскад, без
-    # подтверждения API) — светло-сиреневый, самое слабое происхождение
-    F_BROWSER = PatternFill("solid", fgColor="E4DFEC")
     THIN = Side(style="thin", color="BFBFBF")
     BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
@@ -1472,10 +1469,7 @@ def write_results(results, output_path, rate_rub):
             r.get("description", ""), r.get("manufacturer", "")
         ) or ""
         if r.get("status") == "FOUND":
-            # browser_assisted проверяется первым: цвет должен показывать
-            # слабейшее происхождение (LLM-строка подтверждена API, браузерная — нет)
-            base = (F_BROWSER if r.get("browser_assisted")
-                    else F_LLM if r.get("llm_assisted")
+            base = (F_LLM if r.get("llm_assisted")
                     else (F_R1 if found_idx % 2 == 0 else F_R2))
             found_idx += 1
             # Колонка B: найденный конкретный артикул производителя, когда он
@@ -1533,33 +1527,15 @@ def write_results(results, output_path, rate_rub):
     rfq = len(results) - found
     note_row = len(results) + 3
     llm_rows = sum(1 for r in results if r.get("llm_assisted"))
-    browser_rows = sum(1 for r in results if r.get("browser_assisted"))
     note = (f"Найдено: {found} | RFQ: {rfq} | "
             f"Курс USD/RUB (ЦБ + наценка): {rate_rub:.4f} | "
-            f"Цена по ценовому брекету ≥ количества, приоритет позиций в наличии. ")
-    if browser_rows:
-        # «только API» становится ложью, как только появилась браузерная строка —
-        # сноска уходит заказчику, источники перечисляются честно
-        src_counts = {}
-        for r in results:
-            if r.get("browser_assisted"):
-                s = r.get("browser_source") or "агрегатор"
-                src_counts[s] = src_counts.get(s, 0) + 1
-        breakdown = ", ".join(f"{s}: {n}" for s, n in sorted(src_counts.items()))
-        note += (f"Источник цен — официальные API дистрибьюторов (DigiKey, Mouser, "
-                 f"TME, Newark/Farnell), а также BOM-инструменты агрегаторов "
-                 f"({breakdown}).")
-    else:
-        note += (f"Источник цен — только официальные API дистрибьюторов "
-                 f"(DigiKey, Mouser, TME, Newark/Farnell).")
+            f"Цена по ценовому брекету ≥ количества, приоритет позиций в наличии. "
+            f"Источник цен — только официальные API дистрибьюторов "
+            f"(DigiKey, Mouser, TME, Newark/Farnell).")
     if llm_rows:
         note += (f" Позиций, где написание артикула уточнено автоматически и затем "
                  f"подтверждено у дистрибьютора: {llm_rows} — выделены персиковым, "
                  f"рекомендуется выборочная проверка.")
-    if browser_rows:
-        note += (f" Позиций, цена по которым получена через BOM-инструменты "
-                 f"агрегаторов без подтверждения API: {browser_rows} — выделены "
-                 f"сиреневым, рекомендуется выборочная проверка.")
     nc = ws.cell(row=note_row, column=1, value=note)
     nc.font = Font(name="Arial", size=9, color="595959")
     nc.alignment = Alignment(horizontal="left", wrap_text=True)
@@ -1620,9 +1596,6 @@ def main():
                     help="Путь к превью; нужен для изолированной обработки очереди")
     ap.add_argument("--yes", "-y", action="store_true", help="Не спрашивать подтверждение")
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--browser-cascade", action="store_true",
-                    help="После записи результата выгрузить RFQ-остаток для "
-                         "BOM-инструмента (шаг 1 каскада: oemsecrets)")
     args = ap.parse_args()
 
     preview_path = args.preview_path or (SCRIPT_DIR / PREVIEW_NAME)
@@ -1725,17 +1698,6 @@ def main():
         print(f"LLM-контур пропущен: {e}")
 
     write_results(results, out_path, rate_rub)
-
-    # Браузерный каскад: выгрузка RFQ-остатка для BOM-инструментов агрегаторов.
-    # Сама браузерная нога выполняется отдельно (скилл bom-browser-cascade),
-    # затем browser_bom.py merge вливает экспорт обратно.
-    if args.browser_cascade or env_flag("ENABLE_BROWSER_CASCADE"):
-        try:
-            import browser_bom
-            browser_bom.export_pending(results, site="oemsecrets",
-                                       out_dir=out_path.parent, stem=out_path.stem)
-        except Exception as e:
-            print(f"Браузерный каскад пропущен: {e}")
 
 
 if __name__ == "__main__":

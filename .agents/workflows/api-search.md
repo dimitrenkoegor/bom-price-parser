@@ -1,7 +1,6 @@
 # Основной маршрут: поиск через API дистрибьюторов
 
-Первый и главный источник цены. Что не закрылось — добирается каскадом
-([`browser-cascade.md`](browser-cascade.md)).
+Единственный источник цены. Что не закрылось — `RFQ`; браузерной доборки нет.
 
 ## Главная команда
 
@@ -40,10 +39,5 @@ PYTHONPATH=. python -m unittest tests.test_price_parser
 4. Пишет стилизованный xlsx по [`../rules/output-format.md`](../rules/output-format.md).
 5. Печатает итог: `Найдено: N | RFQ: M` и путь к файлу — эти две строки и надо парсить для
    отчёта, а не пересчитывать книгу заново.
-
-## Другие скрипты
-
-- `bomtool_to_final.py <экспорт.xlsx> [выход.xlsx]` — конвертер экспорта
-  `bomtool.oemsecrets.com` в тот же итоговый формат.
 
 Ключи, домены и зависимости — [`../references/environment.md`](../references/environment.md).

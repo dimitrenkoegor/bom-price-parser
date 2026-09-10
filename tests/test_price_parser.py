@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import openpyxl
 
-import browser_bom as bbom
 import price_parser as parser
 
 
@@ -132,200 +131,30 @@ class SearchValidationTests(unittest.TestCase):
         self.assertEqual(parser.load_items(args)[0]["manufacturer"], "Avago")
 
 
-OEMSECRETS_HEADERS = [
-    "Part Number", "Quantity for Single BOM", "Manufacturer", "Distributor",
-    "Minimum Order", "Stock", "Lead Time on Additional Stock in Weeks",
-    "Unit Price in USD", "Distributor SKU",
-]
-
-
-def _mk_row(**kw):
-    """Нормализованная строка экспорта площадки (контракт read_site_export)."""
-    row = {
-        "req_pn": "CR0805-JW-390E", "matched_mpn": "", "manufacturer": "Bourns",
-        "distributor": "DigiKey", "price": 0.01, "currency": "USD",
-        "break_qty": 1, "moq": 1, "stock": 5000, "lead": None, "sku": "SKU-1",
-    }
-    row.update(kw)
-    return row
-
-
-def _mk_results():
-    """Один FOUND (API) + один RFQ с производителем + один RFQ без."""
-    return [
-        {"pn": "LM358D", "qty": 10, "manufacturer": "TI", "description": "LM358D",
-         "status": "FOUND", "distributor": "Mouser", "price_usd": 0.5,
-         "stock": 100, "moq": 1, "lead": None, "in_stock": True,
-         "resolved_mpn": "", "distr_pn": ""},
-        {"pn": "CR0805-JW-390E", "qty": 100, "manufacturer": "Bourns",
-         "description": "CR0805-JW-390E", "status": "RFQ"},
-        {"pn": "MYSTERY-1", "qty": 5, "manufacturer": "",
-         "description": "MYSTERY-1", "status": "RFQ"},
-    ]
-
-
-class BrowserExportParsingTests(unittest.TestCase):
-    def test_oemsecrets_headers_resolve_all_fields(self):
-        colmap, currency = bbom.resolve_columns(OEMSECRETS_HEADERS, "oemsecrets")
-        for field in ("req_pn", "manufacturer", "distributor", "price",
-                      "moq", "stock", "lead", "sku", "break_qty"):
-            self.assertIn(field, colmap, field)
-        self.assertEqual(currency, "USD")  # валюта из заголовка 'Unit Price in USD'
-
-    def test_distributor_part_number_does_not_steal_part_number(self):
-        headers = ["Part Number", "Distributor Part Number", "Manufacturer",
-                   "Distributor", "Unit Price"]
-        colmap, _ = bbom.resolve_columns(headers, "octopart")
-        self.assertEqual(colmap["req_pn"], 0)
-        self.assertEqual(colmap["sku"], 1)   # длинный синоним выигрывает
-
-    def test_unknown_headers_raise_and_name_them(self):
-        with self.assertRaises(bbom.BrowserExportFormatError) as ctx:
-            bbom.resolve_columns(["Foo", "Bar", "Baz"], "findchips")
-        self.assertIn("Foo", str(ctx.exception))
-        self.assertIn("aliases", str(ctx.exception))
-
-    def test_echo_only_export_refused_without_trust_flag(self):
-        results = _mk_results()
-        rows = [_mk_row(matched_mpn="")]
-        stats = bbom.browser_merge_pass(results, rows, "oemsecrets",
-                                        echo_only=True, trust_echo=False,
-                                        default_currency="USD")
-        self.assertEqual(stats["accepted"], 0)
-        self.assertEqual(stats["rejected"], {"echo_only": 1})
-        self.assertEqual(results[1]["status"], "RFQ")
-
-
-class BrowserMergeValidationTests(unittest.TestCase):
-    def merge(self, rows, results=None, **kw):
-        results = results if results is not None else _mk_results()
-        kw.setdefault("default_currency", "USD")
-        kw.setdefault("trust_echo", True)
-        stats = bbom.browser_merge_pass(results, rows, "oemsecrets", **kw)
-        return results, stats
-
-    def test_missing_manufacturer_rejected(self):
-        _, stats = self.merge([_mk_row(manufacturer="")])
-        self.assertEqual(stats["rejected"], {"no_manufacturer": 1})
-
-    def test_wrong_manufacturer_rejected(self):
-        _, stats = self.merge([_mk_row(manufacturer="Yageo")])
-        self.assertEqual(stats["rejected"], {"wrong_manufacturer": 1})
-
-    def test_analog_mpn_rejected(self):
-        results = _mk_results()
-        results[1]["pn"] = "ERJP06D56R0V"
-        results[1]["manufacturer"] = "Panasonic"
-        _, stats = self.merge(
-            [_mk_row(req_pn="ERJP06D56R0V", matched_mpn="ERJP06D56R0X",
-                     manufacturer="Panasonic")],
-            results=results)
-        self.assertEqual(stats["rejected"], {"analog_mpn": 1})
-
-    def test_packaging_suffix_accepted_lands_in_column_b(self):
-        results, stats = self.merge([_mk_row(matched_mpn="CR0805-JW-390ELF")])
-        self.assertEqual(stats["accepted"], 1)
-        self.assertEqual(results[1]["resolved_mpn"], "CR0805-JW-390ELF")
+class OutputFootnoteTests(unittest.TestCase):
+    def test_llm_row_gets_peach_fill_and_is_counted_in_footnote(self):
+        results = [
+            {"pn": "LM358D", "qty": 10, "manufacturer": "TI", "description": "LM358D",
+             "status": "FOUND", "distributor": "Mouser", "price_usd": 0.5,
+             "stock": 100, "moq": 1, "lead": None, "in_stock": True,
+             "resolved_mpn": "", "distr_pn": ""},
+            {"pn": "MAX481ESA", "qty": 2, "manufacturer": "Maxim", "description": "x",
+             "status": "FOUND", "distributor": "DigiKey", "price_usd": 6.74,
+             "stock": 10, "moq": 1, "lead": None, "in_stock": True,
+             "resolved_mpn": "MAX481ESA+T", "distr_pn": "", "llm_assisted": True},
+            {"pn": "MYSTERY-1", "qty": 5, "manufacturer": "",
+             "description": "MYSTERY-1", "status": "RFQ"},
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "out.xlsx"
             parser.write_results(results, path, 80.0)
             ws = openpyxl.load_workbook(path).active
-            # строка 3 (после FOUND-строки): колонка B = найденный артикул
-            self.assertEqual(ws.cell(row=3, column=2).value, "CR0805-JW-390ELF")
-            self.assertEqual(str(ws.cell(row=3, column=2).fill.fgColor.rgb)[-6:],
-                             "E2EFDA")
-
-    def test_broker_distributor_rejected(self):
-        _, stats = self.merge([_mk_row(distributor="XYZ Surplus Trading")])
-        self.assertEqual(stats["rejected"], {"broker": 1})
-
-    def test_denylist_beats_whitelist_substring(self):
-        _, stats = self.merge([_mk_row(distributor="Digikey Surplus Brokers")])
-        self.assertEqual(stats["rejected"], {"broker": 1})
-
-    def test_unknown_distributor_rejected_not_defaulted(self):
-        _, stats = self.merge([_mk_row(distributor="Acme Components")])
-        self.assertEqual(stats["rejected"], {"unknown_distributor": 1})
-
-    def test_merge_never_overwrites_found_row(self):
-        results, stats = self.merge(
-            [_mk_row(req_pn="LM358D", manufacturer="TI", price=0.1)])
-        self.assertEqual(stats["not_pending"], 1)
-        self.assertEqual(stats["accepted"], 0)
-        self.assertEqual(results[0]["price_usd"], 0.5)   # цена API не тронута
-
-    def test_no_manufacturer_rfq_row_is_not_pending(self):
-        # позиция без производителя — RFQ навсегда, каскад её не трогает
-        results, stats = self.merge(
-            [_mk_row(req_pn="MYSTERY-1", manufacturer="NoName")])
-        self.assertEqual(stats["not_pending"], 1)
-        self.assertEqual(results[2]["status"], "RFQ")
-
-    def test_eur_converted_once_per_run(self):
-        rows = [_mk_row(currency="EUR", price=2.0),
-                _mk_row(currency="EUR", price=3.0, distributor="Mouser"),
-                _mk_row(currency="EUR", price=4.0, distributor="TME")]
-        with patch.object(parser, "get_eur_usd", return_value=1.10) as mock_rate:
-            results, stats = self.merge(rows)
-        self.assertEqual(mock_rate.call_count, 1)   # курс взят один раз на прогон
-        self.assertEqual(stats["accepted"], 1)
-        self.assertAlmostEqual(results[1]["price_usd"], 2.0 * 1.10, places=4)
-
-    def test_unresolvable_currency_refused(self):
-        # валюты нет ни в строке, ни в шапке; дефолт площадки неизвестен
-        _, stats = self.merge([_mk_row(currency=None)], default_currency=None)
-        self.assertEqual(stats["rejected"], {"bad_currency": 1})
-
-    def test_equal_price_larger_stock_wins(self):
-        rows = [_mk_row(stock=10, distributor="Mouser", sku="S-SMALL"),
-                _mk_row(stock=10000, distributor="DigiKey", sku="S-BIG")]
-        results, stats = self.merge(rows)
-        self.assertEqual(stats["accepted"], 1)
-        self.assertEqual(results[1]["distributor"], "DigiKey")   # регламент §4
-
-    def test_read_results_roundtrip_preserves_rate_and_flags(self):
-        results = _mk_results()
-        results[1] = {"pn": "CR0805-JW-390E", "qty": 100, "manufacturer": "Bourns",
-                      "description": "x", "status": "FOUND", "distributor": "TME",
-                      "price_usd": 0.02, "stock": 500, "moq": 1, "lead": None,
-                      "in_stock": True, "resolved_mpn": "", "distr_pn": "",
-                      "browser_assisted": True, "browser_source": "oemsecrets"}
-        results.append({"pn": "MAX481ESA", "qty": 2, "manufacturer": "Maxim",
-                        "description": "x", "status": "FOUND", "distributor": "DigiKey",
-                        "price_usd": 6.74, "stock": 10, "moq": 1, "lead": None,
-                        "in_stock": True, "resolved_mpn": "MAX481ESA+T",
-                        "distr_pn": "", "llm_assisted": True})
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "out.xlsx"
-            parser.write_results(results, path, 83.4567)
-            back, rate = bbom.read_results(path)
-        self.assertAlmostEqual(rate, 83.4567, places=4)
-        self.assertEqual(len(back), 4)
-        self.assertTrue(back[1]["browser_assisted"])
-        self.assertTrue(back[3]["llm_assisted"])
-        self.assertEqual(back[2]["status"], "RFQ")
-        self.assertEqual(back[0]["status"], "FOUND")
-
-    def test_browser_row_gets_distinct_fill_and_honest_footnote(self):
-        results, _ = self.merge([_mk_row()])
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "out.xlsx"
-            parser.write_results(results, path, 80.0)
-            ws = openpyxl.load_workbook(path).active
-            self.assertEqual(str(ws.cell(row=3, column=1).fill.fgColor.rgb)[-6:],
-                             "E4DFEC")
+            self.assertEqual(str(ws.cell(row=3, column=1).fill.fgColor.rgb)[-6:], "FDE9D9")
+            self.assertEqual(ws.cell(row=3, column=2).value, "MAX481ESA+T")
             note = ws.cell(row=len(results) + 3, column=1).value
-        self.assertIn("oemsecrets: 1", note)
-        self.assertNotIn("только официальные API", note)
-        self.assertIn("без подтверждения API: 1", note)
-
-    def test_cascade_pending_shrinks_by_accepted_count(self):
-        results = _mk_results()
-        before = bbom.collect_pending(results)
-        self.assertEqual(len(before), 1)          # без производителя — не в каскад
-        results, stats = self.merge([_mk_row()], results=results)
-        self.assertEqual(stats["accepted"], 1)
-        self.assertEqual(len(bbom.collect_pending(results)), 0)
+        self.assertIn("Найдено: 2 | RFQ: 1", note)
+        self.assertIn("только официальные API", note)
+        self.assertIn("подтверждено у дистрибьютора: 1", note)
 
 
 if __name__ == "__main__":
