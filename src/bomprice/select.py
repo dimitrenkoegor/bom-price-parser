@@ -9,10 +9,16 @@
      производителя (oemsecrets) принимается только при exact;
   4. продавец — только авторизованный: франшизные API по типу площадки,
      агрегаторы — по списку authorized_sellers;
-  5. цена — по брекету при запрошенном количестве, не-USD переводится в USD;
-  6. лучший: сначала наличие ≥ количества, затем минимальная цена, при равной
-     цене больший склад;
-  7. MOQ выше запроса — не отказ, а пометка в сноске.
+  5. количество закупки — запрошенное, но не меньше MOQ, кратности заказа и
+     нижнего ценового брекета; цена — по брекету при этом количестве, не-USD
+     переводится в USD;
+  6. лучший: сначала наличие ≥ количества закупки, затем минимальная
+     стоимость закупки (цена × количество закупки), при равной — меньшая
+     цена за штуку, затем больший склад. Так при запросе 300 шт Cut Tape по $6
+     (300 × 6 = 1800) побеждает катушку по $4 от 500 шт (500 × 4 = 2000), а
+     катушка по $3 от 500 шт (1500) побеждает Cut Tape;
+  7. MOQ выше запроса — не отказ, а пометка в сноске: в отчёт идёт реальный
+     минимум заказа.
 """
 
 from __future__ import annotations
@@ -63,15 +69,30 @@ def acceptable(rec: dict, part: mpnmod.Part, src: registry.Source | None,
 
 
 def enrich(rec: dict, part: mpnmod.Part, rates: fxmod.Rates) -> dict | None:
-    """Цена при количестве в USD, наличие, срок в неделях. None — цену не посчитать."""
-    price, break_qty, below = offermod.price_at(rec.get("price_breaks"), part.qty or 1)
+    """Количество закупки, цена при нём в USD, стоимость закупки, наличие, срок.
+    None — цену не посчитать."""
+    breaks = [b for b in rec.get("price_breaks") or []
+              if b.get("price") is not None and offermod.to_int(b.get("qty"), 0) > 0]
+    if not breaks:
+        return None
+    qty = part.qty or 1
+    # Реальный минимум заказа: наибольшее из MOQ площадки, кратности заказа
+    # (Mult у Mouser, multiples у TME, packSize у Farnell; у DigiKey кратности нет)
+    # и нижнего ценового брекета. Меньше этого площадка не продаст.
+    moq = int(rec.get("moq") or 1)
+    multiple = int(rec.get("order_multiple") or 0)
+    lowest = min(offermod.to_int(b["qty"]) for b in breaks)
+    min_order = max(moq, multiple, lowest)
+    order_qty = max(qty, min_order)
+    if multiple > 1:
+        order_qty = math.ceil(order_qty / multiple) * multiple
+    price, break_qty, _below = offermod.price_at(breaks, order_qty)
     if price is None:
         return None
     usd = rates.to_usd(price, rec.get("currency") or "USD")
     if usd is None:
         return None
     stock = int(rec.get("stock_qty") or 0)
-    in_stock = stock >= part.qty > 0
     days = rec.get("lead_time_days")
     weeks = None
     if days is not None and days > 0:
@@ -79,15 +100,18 @@ def enrich(rec: dict, part: mpnmod.Part, rates: fxmod.Rates) -> dict | None:
     rec["_price_native"] = price
     rec["_price_usd"] = round(usd, 6)
     rec["_break_qty"] = break_qty
-    rec["_below_break"] = below
+    rec["_moq"] = min_order
+    rec["_moq_exceeded"] = min_order > qty
+    rec["_order_qty"] = order_qty
+    rec["_total_usd"] = round(usd * order_qty, 4)
     rec["_stock"] = stock
-    rec["_in_stock"] = in_stock
+    rec["_in_stock"] = stock >= order_qty > 0
     rec["_lead_weeks"] = weeks
     return rec
 
 
 def _key(rec: dict):
-    return (0 if rec["_in_stock"] else 1, rec["_price_usd"], -rec["_stock"])
+    return (0 if rec["_in_stock"] else 1, rec["_total_usd"], rec["_price_usd"], -rec["_stock"])
 
 
 def best(offers: list[dict], part: mpnmod.Part, rates: fxmod.Rates,
@@ -120,12 +144,13 @@ def best(offers: list[dict], part: mpnmod.Part, rates: fxmod.Rates,
         "distributor": distributor, "distr_pn": chosen.get("sku") or "",
         "resolved_mpn": chosen.get("offer_pn") or "",
         "quality": chosen.get("match_quality"),
-        "moq": int(chosen.get("moq") or 1), "stock": chosen["_stock"],
+        "moq": chosen["_moq"], "stock": chosen["_stock"],
         "in_stock": chosen["_in_stock"],
         "lead": None if chosen["_in_stock"] else chosen["_lead_weeks"],
         "price_usd": chosen["_price_usd"], "price_native": chosen["_price_native"],
         "currency": chosen.get("currency") or "USD",
-        "min_not_met": chosen["_below_break"], "break_qty": chosen["_break_qty"],
+        "min_not_met": chosen["_moq_exceeded"], "break_qty": chosen["_break_qty"],
+        "order_qty": chosen["_order_qty"], "total_usd": chosen["_total_usd"],
         "source_id": chosen.get("source_id"), "source_url": chosen.get("source_url") or "",
         "candidates": len(candidates),
         "llm_assisted": False, "llm_reason": "",

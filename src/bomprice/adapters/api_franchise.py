@@ -145,7 +145,9 @@ def digikey(src, query: str):
                 common, sku=v.get("DigiKeyProductNumber") or "",
                 stock_qty=v.get("QuantityAvailableforPackageType"),
                 moq=v.get("MinimumOrderQuantity") or (breaks[0].get("qty") if breaks else None),
-                order_multiple=v.get("StandardPackage"),
+                # StandardPackage — размер упаковки (лоток 260, туба 121), а не кратность
+                # заказа: DigiKey продаёт из них поштучно. Кратности у DigiKey нет,
+                # минимум катушки уже задан через MinimumOrderQuantity.
                 packaging=(v.get("PackageType") or {}).get("Name") or "",
                 price_breaks=breaks,
             ))

@@ -138,7 +138,8 @@ def run(args, log=print) -> int:
         if result["status"] == "FOUND":
             tag = "В наличии" if result["in_stock"] else "под заказ"
             lines.append(f"    -> {result['distributor']}  ${result['price_usd']:.3f}  "
-                         f"({tag}, склад {result['stock']}, MOQ {result['moq']})")
+                         f"({tag}, склад {result['stock']}, MOQ {result['moq']}, "
+                         f"закупка {result['order_qty']} шт = ${result['total_usd']:.2f})")
         else:
             lines.append(f"    -> RFQ ({result.get('reason', '')[:100]})")
         return index, result, lines

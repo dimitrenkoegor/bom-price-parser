@@ -53,6 +53,118 @@ def offer(source="digikey", pn="Q10.240-SS3", mfr="Jauch", price=0.02, stock=100
     return rec
 
 
+class TestMoq(unittest.TestCase):
+    """Сравнивается стоимость закупки (цена × реальное количество), а не цена за штуку.
+    DigiKey отдаёт каждую упаковку отдельным предложением: катушка 2500 шт дешевле
+    за штуку, но при запросе 2 шт покупать 2500 невыгодно."""
+
+    def _pair(self, p):
+        reel = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="REEL", stock=2500,
+                     moq=2500, packaging="Tape & Reel (TR)",
+                     breaks=[{"qty": 2500, "price": 3.28625}])
+        cut = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="CUT", stock=2500,
+                    moq=1, packaging="Cut Tape (CT)",
+                    breaks=[{"qty": 1, "price": 5.66}, {"qty": 10, "price": 5.03},
+                            {"qty": 100, "price": 4.20}])
+        return reel, cut
+
+    def test_cut_tape_beats_cheaper_reel_when_qty_below_moq(self):
+        p = part("LT3014ES5", 2, "Analog Devices")
+        reel, cut = self._pair(p)
+        result = selectmod.best([reel, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "CUT")
+        self.assertEqual(result["moq"], 1)
+        self.assertEqual(result["price_usd"], 5.66)
+        self.assertEqual(result["order_qty"], 2)
+        self.assertEqual(result["total_usd"], 11.32)
+        self.assertFalse(result["min_not_met"])
+
+    def test_reel_taken_only_when_it_is_the_only_offer(self):
+        p = part("LT3014ES5", 2, "Analog Devices")
+        reel, _cut = self._pair(p)
+        result = selectmod.best([reel], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "REEL")
+        self.assertEqual(result["moq"], 2500)
+        self.assertEqual(result["order_qty"], 2500)
+        self.assertTrue(result["min_not_met"])
+
+    def test_reel_wins_when_qty_covers_its_moq(self):
+        p = part("LT3014ES5", 3000, "Analog Devices")
+        reel, cut = self._pair(p)
+        cut["stock_qty"] = 5000
+        reel["stock_qty"] = 5000
+        result = selectmod.best([reel, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "REEL")
+
+    def test_total_cost_example_300_pcs(self):
+        """300 шт: катушка $4 от 500 (2000) проигрывает Cut Tape $6 (1800);
+        катушка $3 от 500 (1500) выигрывает, закупка 500 шт."""
+        p = part("LT3014ES5", 300, "Analog Devices")
+        cut = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="CUT", stock=5000,
+                    moq=1, breaks=[{"qty": 1, "price": 6.0}])
+        reel4 = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="REEL", stock=5000,
+                      moq=500, breaks=[{"qty": 500, "price": 4.0}])
+        result = selectmod.best([reel4, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "CUT")
+        self.assertEqual(result["total_usd"], 1800.0)
+        reel3 = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="REEL", stock=5000,
+                      moq=500, breaks=[{"qty": 500, "price": 3.0}])
+        result = selectmod.best([reel3, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "REEL")
+        self.assertEqual(result["order_qty"], 500)
+        self.assertEqual(result["moq"], 500)
+        self.assertEqual(result["total_usd"], 1500.0)
+        self.assertTrue(result["min_not_met"])
+
+    def test_availability_counts_for_order_qty(self):
+        """Наличие считается под количество закупки: катушка со складом 2500 при
+        запросе 2 шт «в наличии», и по регламенту она обходит Cut Tape под заказ."""
+        p = part("LT3014ES5", 2, "Analog Devices")
+        reel, cut = self._pair(p)
+        cut["stock_qty"] = 0
+        cut["lead_time_days"] = 70
+        result = selectmod.best([reel, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "REEL")
+        self.assertTrue(result["in_stock"])
+
+    def test_order_multiple_counts_as_moq_and_rounds_up(self):
+        """Mouser/TME/Farnell: MOQ 1, но кратность 2500 — минимум 2500;
+        кратность 250 при запросе 300 — закупка 500."""
+        p = part("LT3014ES5", 2, "Analog Devices")
+        reel = offer("mouser", pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="REEL",
+                     stock=5000, moq=1, order_multiple=2500, breaks=[{"qty": 1, "price": 3.0}])
+        cut = offer("mouser", pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="CUT",
+                    moq=1, order_multiple=1, breaks=[{"qty": 1, "price": 6.08}])
+        result = selectmod.best([reel, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "CUT")
+        self.assertEqual(selectmod.best([reel], p, RATES, BY_ID, CFG)["moq"], 2500)
+        p = part("LT3014ES5", 300, "Analog Devices")
+        tray = offer("mouser", pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="TRAY",
+                     stock=5000, moq=1, order_multiple=250, breaks=[{"qty": 1, "price": 3.0}])
+        result = selectmod.best([tray], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["order_qty"], 500)
+        self.assertEqual(result["total_usd"], 1500.0)
+
+    def test_low_break_above_qty_counts_as_moq(self):
+        p = part("LT3014ES5", 2, "Analog Devices")
+        only_break = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="B",
+                           moq=1, breaks=[{"qty": 500, "price": 1.0}])
+        cut = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="CUT",
+                    moq=1, breaks=[{"qty": 1, "price": 5.0}])
+        result = selectmod.best([only_break, cut], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["distr_pn"], "CUT")
+        self.assertEqual(selectmod.best([only_break], p, RATES, BY_ID, CFG)["moq"], 500)
+
+    def test_price_break_reached_by_order_qty(self):
+        """Если минимум заказа поднимает закупку до 500, цена берётся по брекету 500."""
+        p = part("LT3014ES5", 300, "Analog Devices")
+        rec = offer(pn="LT3014ES5#TRPBF", mfr="Analog Devices", part=p, sku="X", stock=5000,
+                    moq=500, breaks=[{"qty": 1, "price": 6.0}, {"qty": 500, "price": 4.0}])
+        result = selectmod.best([rec], p, RATES, BY_ID, CFG)
+        self.assertEqual(result["price_usd"], 4.0)
+        self.assertEqual(result["break_qty"], 500)
+
+
 class TestAcceptance(unittest.TestCase):
     def test_rejects_other_manufacturer(self):
         wrong = offer(pn="WRONG-1", mfr="Yageo", price=0.01)
